@@ -51,7 +51,7 @@ async function readDuration(inputPath: string) {
     );
   });
   const match = stderr.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
-  if (!match) throw new AppError("The recording duration could not be read.", 422, "AUDIO_UNREADABLE");
+  if (!match) return null;
   return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
 }
 
@@ -69,7 +69,7 @@ export async function createTranscriptionChunks(
   try {
     await writeFile(inputPath, audio);
     const duration = await readDuration(inputPath);
-    if (duration > MAX_AUDIO_DURATION_SECONDS) {
+    if (duration !== null && duration > MAX_AUDIO_DURATION_SECONDS) {
       throw new AppError(
         "Recordings can be up to 4 hours long on the free tier.",
         413,
@@ -78,6 +78,7 @@ export async function createTranscriptionChunks(
     }
     if (
       audio.byteLength <= maxDirectBytes &&
+      duration !== null &&
       duration <= chunkSeconds &&
       !mediaType.startsWith("video/")
     ) {
@@ -100,21 +101,34 @@ export async function createTranscriptionChunks(
     const names = (await readdir(directory)).filter((name) => name.startsWith("chunk-")).sort();
     if (!names.length) throw new AppError("No audio track was found in this file.", 422, "AUDIO_TRACK_MISSING");
     const chunks: AudioChunk[] = [];
+    let measuredDuration = 0;
     for (const [index, name] of names.entries()) {
-      const chunk = await readFile(join(directory, name));
+      const chunkPath = join(directory, name);
+      const chunk = await readFile(chunkPath);
       if (chunk.byteLength > maxDirectBytes) {
         throw new AppError("This recording could not be split into safe transcription chunks.", 422, "CHUNK_TOO_LARGE");
       }
+      const chunkDuration = await readDuration(chunkPath);
+      const offsetSeconds = duration === null ? measuredDuration : index * chunkSeconds;
       chunks.push({
         audio: chunk,
-        offsetSeconds: index * chunkSeconds,
+        offsetSeconds,
         filename: name,
         mediaType: "audio/flac",
       });
+      measuredDuration += chunkDuration ?? chunkSeconds;
+    }
+    const resolvedDuration = duration ?? measuredDuration;
+    if (resolvedDuration > MAX_AUDIO_DURATION_SECONDS) {
+      throw new AppError(
+        "Recordings can be up to 4 hours long on the free tier.",
+        413,
+        "AUDIO_TOO_LONG",
+      );
     }
     return {
       chunks,
-      durationSeconds: duration,
+      durationSeconds: resolvedDuration,
       cleanup: () => rm(directory, { recursive: true, force: true }),
     };
   } catch (error) {

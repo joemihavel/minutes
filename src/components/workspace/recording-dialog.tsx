@@ -155,7 +155,13 @@ export function RecordingDialog({
         };
         recorder.onerror = () => {
           saveRecordingRef.current = false;
-          setError("Recording was interrupted by the browser. Please try again.");
+          recorder.onstop = null;
+          if (recorder.state !== "inactive") {
+            try { recorder.stop(); } catch { /* recorder has already stopped */ }
+          }
+          recorderRef.current = null;
+          releaseCapture();
+          setError("Recording was interrupted before it could be saved.");
           setCaptureState("error");
         };
 
@@ -281,7 +287,11 @@ export function RecordingDialog({
     try {
       recorder.stop();
     } catch {
-      setError("The browser could not finish this recording. Please try again.");
+      saveRecordingRef.current = false;
+      recorder.onstop = null;
+      recorderRef.current = null;
+      releaseCapture();
+      setError("The browser could not finish or save this recording.");
       setCaptureState("error");
     }
   }
@@ -334,7 +344,7 @@ export function RecordingDialog({
         <header className="recording-header">
           <div className="recording-status">
             <i aria-hidden="true" />
-            <span>{captureState === "requesting" ? "CONNECTING" : captureState === "finalizing" ? "SAVING" : captureState === "error" ? "MICROPHONE" : "RECORDING"}</span>
+            <span>{captureState === "requesting" ? "CONNECTING" : captureState === "finalizing" ? "SAVING" : captureState === "error" ? "NOT SAVED" : "RECORDING"}</span>
           </div>
           <time aria-label={`${elapsed} seconds recorded`}>{formatElapsed(elapsed)}</time>
           <button className="icon-button" type="button" disabled={captureState === "finalizing"} onClick={discard} aria-label="Close recorder"><X size={17} /></button>
@@ -345,15 +355,15 @@ export function RecordingDialog({
             <span /><i /><b />
           </div>
           <div>
-            <h2 id="recording-title">{captureState === "error" ? "Microphone unavailable" : captureState === "finalizing" ? "Preparing your recording" : captureState === "requesting" ? "Opening your microphone" : "Go ahead, I’m listening"}</h2>
-            <p>{captureState === "error" ? error : "Speak naturally in Hindi, English, or Hinglish."}</p>
+            <h2 id="recording-title">{captureState === "error" ? "Recording didn’t save" : captureState === "finalizing" ? "Preparing your recording" : captureState === "requesting" ? "Opening your microphone" : "Go ahead, I’m listening"}</h2>
+            <p>{captureState === "error" ? "Nothing was added to your library." : "Speak naturally in Hindi, English, or Hinglish."}</p>
           </div>
         </div>
 
         {captureState === "error" ? (
           <div className="recording-error" role="alert">
             <AlertCircle size={17} />
-            <span>Allow microphone access in your browser, then try again.</span>
+            <span>{error || "The recording could not be captured. Check your microphone and try again."}</span>
           </div>
         ) : (
           <section className="live-transcript" aria-label="Live transcript">
@@ -365,7 +375,7 @@ export function RecordingDialog({
         <footer className="recording-actions">
           <button type="button" className="button secondary" disabled={captureState === "finalizing"} onClick={discard}>Discard</button>
           {captureState === "error" ? (
-            <button type="button" className="button dark" onClick={retry}><RotateCcw size={15} />Try again</button>
+            <button type="button" className="button dark" onClick={retry}><RotateCcw size={15} />Record again</button>
           ) : (
             <>
               <button type="button" className="button secondary recording-copy" disabled={!transcript.trim()} onClick={() => void copyTranscript()}>

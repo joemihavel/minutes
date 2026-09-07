@@ -4,14 +4,13 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { clips } from "@/db/schema";
 import { getClipDTO, listClips } from "@/data/clips";
-import { getProviderConfig, listConnections } from "@/data/connections";
 import { getUsage, recordUsage } from "@/data/usage";
 import { USER_STORAGE_LIMIT_BYTES } from "@/lib/limits";
-import type { Provider } from "@/lib/types";
 import { requireUserId } from "@/lib/server/auth";
 import { AppError, errorResponse, safeErrorDetails } from "@/lib/server/errors";
 import { processClipTranscription } from "@/lib/server/process-clip";
 import { enforceRateLimit } from "@/lib/server/rate-limit";
+import { getTranscriptionProvider } from "@/lib/server/transcription-provider";
 import { titleFromFilename, safeFilename } from "@/lib/clip-helpers";
 import { validateAudio } from "@/lib/server/validation";
 
@@ -34,20 +33,7 @@ export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
     await enforceRateLimit("upload", userId);
-    const connections = await listConnections(userId);
-    const provider: Provider | null = connections.some((item) => item.provider === "google" && item.connected)
-      ? "google"
-      : connections.some((item) => item.provider === "groq" && item.connected)
-        ? "groq"
-        : null;
-    if (!provider) {
-      throw new AppError("Connect Google AI or Groq before uploading audio.", 409, "PROVIDER_NOT_CONNECTED");
-    }
-    const providerConfig = await getProviderConfig(userId, provider);
-    const transcriptionModel = providerConfig.models.transcription;
-    if (!transcriptionModel) {
-      throw new AppError("Choose a transcription model before uploading.", 409, "MODEL_REQUIRED");
-    }
+    const transcription = await getTranscriptionProvider(userId);
 
     let form: FormData;
     try {
@@ -102,9 +88,9 @@ export async function POST(request: Request) {
       await processClipTranscription({
         userId,
         clipId: created.id,
-        provider,
-        apiKey: providerConfig.apiKey,
-        model: transcriptionModel,
+        provider: transcription.provider,
+        apiKey: transcription.apiKey,
+        model: transcription.model,
         audio,
         filename,
         mediaType: file.type,

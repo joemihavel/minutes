@@ -108,10 +108,6 @@ export function AssistantChat({ clips, connections, onConnect, onRemoveClip }: A
 
   return (
     <div className="chat-layout">
-      <header className="chat-header">
-        <div><Sparkles size={16} /><div><b>Ask {plural ? `${clips.length} clips` : "this clip"}</b><small>Grounded only in selected transcripts</small></div></div>
-        {!connected && <button onClick={onConnect}>Connect AI</button>}
-      </header>
       <AssistantRuntimeProvider runtime={runtime}>
         <ThreadPrimitive.Root className="assistant-thread">
           <ThreadPrimitive.Viewport className="messages" autoScroll>

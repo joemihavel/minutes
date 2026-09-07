@@ -14,6 +14,17 @@ import { sanitizeTranscriptSegments, sanitizeTranscriptText } from "@/lib/transc
 const TRANSCRIPTION_PROMPT =
   "Hindi, English, and natural Hinglish speech. Preserve code-switching, names, numbers, and meaning accurately. Transcribe the complete audio without summarizing or stopping early.";
 
+export async function markClipTranscriptionFailed(clipId: string, error: unknown) {
+  const message = error instanceof AppError
+    ? error.message
+    : "The recording was saved, but transcription failed. Check your AI connection and try again.";
+  await getDb().update(clips).set({
+    status: "failed",
+    errorMessage: message.slice(0, 280),
+    updatedAt: new Date(),
+  }).where(eq(clips.id, clipId)).catch(() => undefined);
+}
+
 export async function processClipTranscription(input: {
   userId: string;
   clipId: string;
@@ -124,13 +135,6 @@ export async function processClipTranscription(input: {
     });
   } catch (error) {
     console.error("Background clip transcription failed", safeErrorDetails(error));
-    const message = error instanceof AppError
-      ? error.message
-      : "The recording was saved, but transcription failed. Check your AI connection and try again.";
-    await getDb().update(clips).set({
-      status: "failed",
-      errorMessage: message.slice(0, 280),
-      updatedAt: new Date(),
-    }).where(eq(clips.id, input.clipId)).catch(() => undefined);
+    await markClipTranscriptionFailed(input.clipId, error);
   }
 }

@@ -17,6 +17,7 @@ import { RecordingDialog } from "@/components/workspace/recording-dialog";
 import { SummaryContent } from "@/components/summary-content";
 import { MAX_AUDIO_UPLOAD_BYTES, USER_STORAGE_LIMIT_BYTES } from "@/lib/limits";
 import { MODEL_OPTIONS } from "@/lib/models";
+import { matchesPersistedUpload } from "@/lib/clip-helpers";
 import type { ClipDTO, ConnectionDTO, ModelCapability, Provider, TranscriptSegment, UsageDTO } from "@/lib/types";
 
 type Pane = "library" | "transcript" | "chat";
@@ -80,15 +81,35 @@ function uploadAudio(
   });
 }
 
+async function reconcileUploadedClip(file: File, startedAt: string) {
+  for (const delay of [0, 600, 1_600]) {
+    if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
+    try {
+      const latest = await api<{ clips: ClipDTO[] }>("/api/clips");
+      const recovered = latest.clips.find((clip) =>
+        matchesPersistedUpload(clip, file, startedAt),
+      );
+      if (recovered) return recovered;
+    } catch {
+      // Keep checking briefly: the upload may still be committing after a lost response.
+    }
+  }
+  return undefined;
+}
+
 export function Workspace({ initialClips, initialConnections, initialUsage }: {
   initialClips: ClipDTO[]; initialConnections: ConnectionDTO[]; initialUsage: UsageDTO;
 }) {
   const [clips, setClips] = useState(initialClips);
-  const [selectedId, setSelectedId] = useState(initialClips[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialClips[0]?.id ?? null);
   const [connections, setConnections] = useState(initialConnections);
   const [usage, setUsage] = useState(initialUsage);
   const [pane, setPane] = useState<Pane>(initialClips.length ? "transcript" : "library");
-  const [dialog, setDialog] = useState<Dialog>(null);
+  const [dialog, setDialog] = useState<Dialog>(() =>
+    initialClips.length === 0 && !initialConnections.some((connection) => connection.connected)
+      ? "providers"
+      : null,
+  );
   const [query, setQuery] = useState("");
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -102,6 +123,7 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
   const [shareView, setShareView] = useState<DocumentView>("summary");
   const [notice, setNotice] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const retryFilesRef = useRef(new Map<string, File>());
   const terminalNoticesRef = useRef(new Set<string>());
   const selected = clips.find((clip) => clip.id === selectedId) ?? null;
   const transcriptionReady = connections.some((item) => item.connected && item.models.transcription);
@@ -222,7 +244,6 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
       return;
     }
     if (!transcriptionReady) { setDialog("providers"); showNotice("Connect Google AI or Groq before uploading audio."); return; }
-    const previouslySelectedId = selectedId;
     const temporaryId = crypto.randomUUID();
     const now = new Date().toISOString();
     const temporaryClip: ClipDTO = {
@@ -256,30 +277,26 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
           setClips((items) => items.map((item) => item.id === temporaryId ? { ...item, status: "transcribing" } : item));
         }
       });
+      retryFilesRef.current.delete(temporaryId);
       setClips((items) => items.map((item) => item.id === temporaryId ? clip : item));
       setSelectedId(clip.id);
       const usageResult = await api<{ usage: UsageDTO }>("/api/usage"); setUsage(usageResult.usage);
       showNotice("Recording saved. Transcribing in the background.");
     } catch (error) {
-      let recovered: ClipDTO | undefined;
-      try {
-        const latest = await api<{ clips: ClipDTO[] }>("/api/clips");
-        recovered = latest.clips.find((item) =>
-          item.originalFilename === file.name &&
-          item.byteSize === file.size &&
-          new Date(item.createdAt).getTime() >= new Date(now).getTime() - 5_000,
-        );
-      } catch {
-        // The original upload error is more useful when reconciliation also fails.
-      }
+      const recovered = await reconcileUploadedClip(file, now);
       if (recovered) {
+        retryFilesRef.current.delete(temporaryId);
         setClips((items) => [recovered, ...items.filter((item) => item.id !== temporaryId && item.id !== recovered.id)]);
         setSelectedId(recovered.id);
-        showNotice("Recording saved. Transcribing in the background.");
+        showNotice(recovered.status === "failed" ? "Recording saved. Transcription needs another try." : "Recording saved. Transcribing in the background.");
       } else {
-        setClips((items) => items.filter((item) => item.id !== temporaryId));
-        setSelectedId((current) => current === temporaryId ? previouslySelectedId : current);
-        showNotice(error instanceof Error ? error.message : "Upload failed.");
+        const message = error instanceof Error ? error.message : "The upload could not reach the server.";
+        retryFilesRef.current.set(temporaryId, file);
+        setClips((items) => items.map((item) => item.id === temporaryId
+          ? { ...item, status: "failed", errorMessage: message, updatedAt: new Date().toISOString() }
+          : item));
+        setSelectedId(temporaryId);
+        showNotice("Upload interrupted. Your file is ready to try again.");
       }
     } finally {
       setUploadProgress((current) => {
@@ -302,6 +319,34 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
       setClips((items) => items.map((x) => x.id === clip.id ? clip : x));
       showNotice("Saved.");
     } catch (error) { setClips((items) => items.map((x) => x.id === previous.id ? previous : x)); showNotice(error instanceof Error ? error.message : "Could not save."); }
+  }
+
+  async function retryTranscription(clip: ClipDTO) {
+    const previous = clip;
+    terminalNoticesRef.current.delete(clip.id);
+    setClips((items) => items.map((item) => item.id === clip.id
+      ? { ...item, status: "transcribing", errorMessage: null, updatedAt: new Date().toISOString() }
+      : item));
+    try {
+      const result = await api<{ clip: ClipDTO }>(`/api/clips/${clip.id}/retry`, { method: "POST" });
+      setClips((items) => items.map((item) => item.id === clip.id ? result.clip : item));
+      showNotice("Trying the complete recording again.");
+    } catch (error) {
+      setClips((items) => items.map((item) => item.id === clip.id ? previous : item));
+      showNotice(error instanceof Error ? error.message : "Could not retry transcription.");
+    }
+  }
+
+  function retryUpload(clip: ClipDTO) {
+    const file = retryFilesRef.current.get(clip.id);
+    if (!file) {
+      fileRef.current?.click();
+      return;
+    }
+    retryFilesRef.current.delete(clip.id);
+    setClips((items) => items.filter((item) => item.id !== clip.id));
+    setSelectedId((current) => current === clip.id ? null : current);
+    void upload(file);
   }
 
   async function deleteClip() {
@@ -358,7 +403,7 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
           onDragLeave={(event)=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDragging(false)}}
           onDrop={(event)=>{event.preventDefault();setDragging(false);void upload(event.dataTransfer.files?.[0])}}
         >
-          <div className="pane-heading"><h1>Audio library</h1><button className="icon-button" onClick={()=>fileRef.current?.click()} aria-label="Add audio"><Plus size={18}/></button></div>
+          <div className="pane-heading"><h1>Audio library</h1></div>
           <input ref={fileRef} hidden type="file" accept="audio/*,.mp3,.m4a,.mp4,.wav,.webm,.ogg,.oga" onChange={(e)=>upload(e.target.files?.[0])}/>
           <div className="library-actions">
             <button className="record-button" disabled={uploading} onClick={startRecording}><Mic size={16}/><span><b>Start talking</b><small>Record & transcribe</small></span></button>
@@ -376,14 +421,14 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
               </label>
               <button className="clip-main" onClick={()=>chooseClip(clip.id)}>
                 <span className="clip-icon"><FileAudio size={16}/></span>
-                <span className="clip-copy"><b>{clip.title}</b><small>{clip.status==="uploading"?`Uploading ${uploadProgress[clip.id]??0}%`:clip.status==="transcribing"?"Transcribing audio…":`${age(clip.updatedAt)} · ${duration(clip.durationSeconds)}`}</small>{clip.status!=="ready"&&<i className="clip-progress"><span style={{transform:`scaleX(${clip.status==="uploading"?(uploadProgress[clip.id]??3)/100:.74})`}}/></i>}</span>
+                <span className="clip-copy"><b>{clip.title}</b><small>{clip.status==="uploading"?`Uploading ${uploadProgress[clip.id]??0}%`:clip.status==="transcribing"?"Transcribing audio…":clip.status==="failed"?`${clip.hasAudio?"Transcription":"Upload"} failed · open to retry`:`${age(clip.updatedAt)} · ${duration(clip.durationSeconds)}`}</small>{(clip.status==="uploading"||clip.status==="transcribing")&&<i className="clip-progress"><span style={{transform:`scaleX(${clip.status==="uploading"?(uploadProgress[clip.id]??3)/100:.74})`}}/></i>}</span>
               </button>
               {clip.status!=="uploading"&&clip.hasAudio?<button className="clip-delete" onClick={()=>requestDelete(clip.id)} aria-label={`Delete ${clip.title}`} title="Delete clip"><Trash2 size={14}/></button>:<span className={`status-dot ${clip.status}`}/>}
             </div>)}
           </div>
         </aside>
         <section className={`transcript-pane ${pane!=="transcript"?"mobile-hidden":""}`}>
-          {selected ? selected.status==="ready" ? <Transcript key={selected.id} clip={selected} connections={connections} reveal={revealingIds.has(selected.id)} onRevealComplete={finishTranscriptReveal} onUpdate={updateClip} onReplace={(next)=>setClips((items)=>items.map((item)=>item.id===next.id?next:item))} onShare={(view)=>{setShareView(view);setDialog("share")}} onDelete={()=>requestDelete(selected.id)} onChat={()=>setPane("chat")} onConnect={()=>setDialog("providers")} notify={showNotice}/> : <ProcessingClip clip={selected} progress={uploadProgress[selected.id]}/> : <EmptyWorkspace onUpload={()=>fileRef.current?.click()}/>}
+          {selected ? selected.status==="ready" ? <Transcript key={selected.id} clip={selected} connections={connections} reveal={revealingIds.has(selected.id)} onRevealComplete={finishTranscriptReveal} onUpdate={updateClip} onReplace={(next)=>setClips((items)=>items.map((item)=>item.id===next.id?next:item))} onShare={(view)=>{setShareView(view);setDialog("share")}} onDelete={()=>requestDelete(selected.id)} onChat={()=>setPane("chat")} onConnect={()=>setDialog("providers")} notify={showNotice}/> : <ProcessingClip clip={selected} progress={uploadProgress[selected.id]} onRetry={()=>selected.hasAudio?void retryTranscription(selected):retryUpload(selected)}/> : <EmptyWorkspace onUpload={()=>fileRef.current?.click()}/>}
         </section>
         <aside className={`chat-pane ${pane!=="chat"?"mobile-hidden":""}`}>
           {sourceClips.length ? <AssistantChat key={chatScopeKey} clips={sourceClips} connections={connections} onConnect={()=>setDialog("providers")} onRemoveClip={removeChatSource}/> : <div className="chat-empty"><MessageSquareText/><b>Select chat sources</b><p>Check one or more ready clips in the library to ask questions across them.</p></div>}
@@ -401,9 +446,10 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
 
 function EmptyWorkspace({onUpload}:{onUpload:()=>void}) { return <div className="empty-workspace"><span><AudioLines size={26}/></span><h2>Turn a recording into something useful.</h2><p>Your transcript and clip-aware assistant will live here.</p><button className="button primary" onClick={onUpload}><Upload size={16}/> Upload audio</button></div>; }
 
-function ProcessingClip({clip,progress}:{clip:ClipDTO;progress?:number}) {
+function ProcessingClip({clip,progress,onRetry}:{clip:ClipDTO;progress?:number;onRetry:()=>void}) {
   const uploaded=clip.status!=="uploading";
-  return <div className="processing-clip"><div className="processing-orbit"><AudioLines size={25}/><i/></div><span className="kicker">{clip.status==="failed"?"TRANSCRIPTION STOPPED":uploaded?"TRANSCRIBING":"UPLOADING"}</span><h2>{clip.title}</h2><p>{clip.status==="failed"?(clip.errorMessage??"The recording is saved, but it could not be transcribed."):uploaded?<ShimmeringText text="Recording saved. We’re transcribing the complete audio and identifying speakers."/>:`Sending your recording securely… ${progress??0}%`}</p><div className="processing-meter"><i style={{transform:`scaleX(${uploaded?.74:(progress??3)/100})`}}/></div><small>{clip.status==="failed"?"Your original audio is still safely stored.":uploaded?"You can browse other clips while this finishes.":"Keep this tab open until the upload completes."}</small></div>;
+  const failed=clip.status==="failed";
+  return <div className={`processing-clip ${failed?"failed":""}`}><div className="processing-orbit">{failed?<CircleHelp size={25}/>:<AudioLines size={25}/>} {!failed&&<i/>}</div><span className="kicker">{failed?clip.hasAudio?"TRANSCRIPTION FAILED":"UPLOAD INTERRUPTED":uploaded?"TRANSCRIBING":"UPLOADING"}</span><h2>{clip.title}</h2><p>{failed?(clip.errorMessage??"The recording is saved, but it could not be transcribed."):uploaded?<ShimmeringText text="Recording saved. We’re transcribing the complete audio and identifying speakers."/>:`Sending your recording securely… ${progress??0}%`}</p>{failed?<button type="button" className="button dark processing-retry" onClick={onRetry}><RefreshCw size={15}/>{clip.hasAudio?"Try transcription again":"Try upload again"}</button>:<div className="processing-meter"><i style={{transform:`scaleX(${uploaded?.74:(progress??3)/100})`}}/></div>}<small>{failed?clip.hasAudio?"Your original audio is safely stored.":"Your file is still available in this tab.":uploaded?"You can browse other clips while this finishes.":"Keep this tab open until the upload completes."}</small></div>;
 }
 
 function Transcript({clip,connections,reveal,onRevealComplete,onUpdate,onReplace,onShare,onDelete,onChat,onConnect,notify}:{clip:ClipDTO;connections:ConnectionDTO[];reveal:boolean;onRevealComplete:(id:string)=>void;onUpdate:(x:Partial<Pick<ClipDTO,"title"|"transcript">>)=>void;onReplace:(x:ClipDTO)=>void;onShare:(view:DocumentView)=>void;onDelete:()=>void;onChat:()=>void;onConnect:()=>void;notify:(message:string)=>void}) {
@@ -503,42 +549,43 @@ function ModelRoute({title,description,provider,capability,connection,setConnect
   const selected=connection?.models[capability]??"";
   const options=Array.from(new Set([...(MODEL_OPTIONS[provider][capability]??[]),selected].filter(Boolean)));
   const [custom,setCustom]=useState(false),[customId,setCustomId]=useState(""),[saving,setSaving]=useState(false);
-  const customRef=useRef<HTMLFormElement>(null);
+  const customRef=useRef<HTMLDivElement>(null);
+  const providerLabel=provider==="groq"?"Groq":"Google AI";
+  const closeCustom=useCallback(()=>{setCustom(false);setCustomId("")},[]);
   useEffect(()=>{
     if(!custom)return;
-    const dismiss=(event:PointerEvent)=>{if(!customRef.current?.contains(event.target as Node)){setCustom(false);setCustomId("")}};
-    const escape=(event:KeyboardEvent)=>{if(event.key==="Escape"){setCustom(false);setCustomId("")}};
+    const dismiss=(event:PointerEvent)=>{if(!customRef.current?.contains(event.target as Node))closeCustom()};
+    const escape=(event:KeyboardEvent)=>{if(event.key==="Escape")closeCustom()};
     document.addEventListener("pointerdown",dismiss);document.addEventListener("keydown",escape);
     return()=>{document.removeEventListener("pointerdown",dismiss);document.removeEventListener("keydown",escape)};
-  },[custom]);
+  },[closeCustom,custom]);
   async function choose(modelId:string){
-    if(modelId==="__custom"){setCustom(true);return}
     setSaving(true);
     try{
       const result=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({provider,capability,modelId})});
-      setConnections(result.connections);setCustom(false);setCustomId("");notify(`${title} model updated.`);
+      setConnections(result.connections);closeCustom();notify(`${title} model updated.`);
     }catch(error){notify(error instanceof Error?error.message:"Could not update the model.")}finally{setSaving(false)}
   }
   return <div className="model-route">
     <span className="model-route-icon">{provider==="google"?<GeminiIcon size={17}/>:capability==="transcription"?<AudioLines size={17}/>:<Bot size={17}/>}</span>
     <div className="model-route-copy"><b>{title}</b><small>{description}</small></div>
-    <div className="model-route-control">
-      {connection?.connected?<select value={custom?"__custom":selected} disabled={saving} onChange={(event)=>void choose(event.target.value)} aria-label={`${title} model`}>
+    <div className="model-route-control" ref={customRef}>
+      {connection?.connected?<><div className="model-select-row"><select value={selected} disabled={saving} onChange={(event)=>void choose(event.target.value)} aria-label={`${title} model`}>
         {options.map((model)=><option key={model} value={model}>{model}</option>)}
-        <option value="__custom">+ Add model ID…</option>
-      </select>:<button type="button" onClick={onConnect}>Connect {provider==="groq"?"Groq":"Google AI"}</button>}
+      </select><button type="button" className="model-add-trigger" aria-label={`Add a custom ${providerLabel} model`} aria-expanded={custom} onClick={()=>custom?closeCustom():setCustom(true)}><Plus size={15}/></button></div>
+      {custom&&<form className="custom-model-popover" onSubmit={(event)=>{event.preventDefault();if(customId.trim())void choose(customId.trim())}}><header><span className="model-popover-icon">{provider==="google"?<GeminiIcon size={16}/>:<Bot size={16}/>}</span><span><b>Add a {providerLabel} model</b><small>Use the exact ID from your provider dashboard.</small></span></header><label>Model ID<input aria-label="Provider model ID" autoFocus value={customId} onChange={(event)=>setCustomId(event.target.value)} placeholder={provider==="google"?"gemini-…":"provider/model-name"} maxLength={120}/></label><footer><button type="button" className="button secondary" onClick={closeCustom}>Cancel</button><button className="button dark" disabled={saving||customId.trim().length<2}>{saving?<LoaderCircle className="spin" size={14}/>:<Plus size={14}/>}Add model</button></footer></form>}</>:<button type="button" onClick={onConnect}>Connect {providerLabel}</button>}
     </div>
-    {custom&&<form ref={customRef} className="custom-model" onSubmit={(event)=>{event.preventDefault();if(customId.trim())void choose(customId.trim())}}><input aria-label="Provider model ID" autoFocus value={customId} onChange={(event)=>setCustomId(event.target.value)} placeholder="Provider model ID" maxLength={120}/><button type="button" onClick={()=>{setCustom(false);setCustomId("")}}>Cancel</button><button className="button dark" disabled={saving||customId.trim().length<2}>{saving?<LoaderCircle className="spin" size={14}/>:<Plus size={14}/>}Add</button></form>}
   </div>;
 }
 
 function ProviderDialog({connections,setConnections,close,notify}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;close:()=>void;notify:(x:string)=>void}) {
-  const [view,setView]=useState<"models"|"accounts">("models"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false); const existing=connections.find((x)=>x.provider===provider);
-  async function save(e:React.FormEvent){e.preventDefault();setSaving(true);try{const x=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider,apiKey:key})});setConnections(x.connections);setKey("");notify(`${provider==="groq"?"Groq":"Google AI"} connected.`)}catch(e){notify(e instanceof Error?e.message:"Connection failed.")}finally{setSaving(false)}}
+  const [view,setView]=useState<"models"|"accounts">(()=>connections.some((item)=>item.connected)?"models":"accounts"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false); const existing=connections.find((x)=>x.provider===provider);
+  async function save(e:React.FormEvent){e.preventDefault();setSaving(true);try{const x=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider,apiKey:key})});setConnections(x.connections);setKey("");const nextProvider:Provider=provider==="groq"?"google":"groq";const next=x.connections.find((item)=>item.provider===nextProvider);if(!next?.connected){setProvider(nextProvider);setView("accounts");notify(`${provider==="groq"?"Groq":"Google AI"} connected. Add ${nextProvider==="groq"?"Groq":"Google AI"} next.`)}else{setView("models");notify(`${provider==="groq"?"Groq":"Google AI"} connected.`)}}catch(e){notify(e instanceof Error?e.message:"Connection failed.")}finally{setSaving(false)}}
   async function remove(){try{const x=await api<{connections:ConnectionDTO[]}>(`/api/connections?provider=${provider}`,{method:"DELETE"});setConnections(x.connections);notify("Connection removed.")}catch(e){notify(e instanceof Error?e.message:"Could not disconnect.")}}
   const groq=connections.find((item)=>item.provider==="groq"),google=connections.find((item)=>item.provider==="google");
   const openAccount=(next:Provider)=>{setProvider(next);setView("accounts")};
-  return <Modal title="AI setup" subtitle="Choose models or manage provider access." close={close} className="provider-modal"><div className="provider-view-tabs" role="tablist" aria-label="AI setup"><button role="tab" aria-selected={view==="models"} className={view==="models"?"active":""} onClick={()=>setView("models")}><Bot size={15}/>Models</button><button role="tab" aria-selected={view==="accounts"} className={view==="accounts"?"active":""} onClick={()=>setView("accounts")}><Link2 size={15}/>Accounts</button></div>{view==="models"?<section className="model-routing"><div className="section-label"><span>USED FOR</span><small>New requests</small></div><ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/><ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/></section>:<section className="provider-connect-section"><div className="provider-tabs"><button className={provider==="groq"?"active":""} onClick={()=>setProvider("groq")}><AudioLines/>Groq<small>Transcription + chat</small></button><button className={provider==="google"?"active":""} onClick={()=>setProvider("google")}><GeminiIcon size={18}/>Google AI<small>Speakers + chat</small></button></div><div className="provider-status"><span className={`connection-dot ${existing?.connected?"ready":""}`}/>{existing?.connected?`Connected · ${existing.keyHint}`:"Not connected"}</div><form className="key-form" onSubmit={save}><label>{provider==="groq"?"Groq API key":"Google AI Studio API key"}<input autoComplete="off" type="password" value={key} onChange={(e)=>setKey(e.target.value)} placeholder={existing?.connected?"Enter a new key to replace it":"Paste your API key"}/></label><p>{provider==="groq"?<>Used for fallback transcription and fast chat. <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Create a Groq key</a>.</>:<>Used for speaker-aware transcription and Gemini chat. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Create a Google AI key</a>.</>}</p><div>{existing?.connected&&<button type="button" className="button danger-text" onClick={remove}>Disconnect</button>}<button className="button dark" disabled={saving||key.length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Link2 size={15}/>}Validate & connect</button></div></form><div className="security-note"><LockKeyholeIcon/>Encrypted with AES-256-GCM. Keys are never returned to the browser.</div></section>}</Modal>;
+  const firstConnection=!connections.some((item)=>item.connected);
+  return <Modal title="AI setup" subtitle={firstConnection?"Connect Groq and Google AI to start recording, transcribing, and chatting.":"Choose models or manage provider access."} close={close} className="provider-modal"><div className="provider-view-tabs" role="tablist" aria-label="AI setup"><button role="tab" aria-selected={view==="models"} className={view==="models"?"active":""} onClick={()=>setView("models")}><Bot size={15}/>Models</button><button role="tab" aria-selected={view==="accounts"} className={view==="accounts"?"active":""} onClick={()=>setView("accounts")}><Link2 size={15}/>Accounts</button></div>{view==="models"?<section className="model-routing"><div className="section-label"><span>USED FOR</span><small>New requests</small></div><ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/><ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/></section>:<section className="provider-connect-section"><div className="provider-tabs"><button className={provider==="groq"?"active":""} onClick={()=>setProvider("groq")}><AudioLines/>Groq<small>Transcription + chat</small></button><button className={provider==="google"?"active":""} onClick={()=>setProvider("google")}><GeminiIcon size={18}/>Google AI<small>Speakers + chat</small></button></div><div className="provider-status"><span className={`connection-dot ${existing?.connected?"ready":""}`}/>{existing?.connected?`Connected · ${existing.keyHint}`:"Not connected"}</div><form className="key-form" onSubmit={save}><label>{provider==="groq"?"Groq API key":"Google AI Studio API key"}<input autoComplete="off" type="password" value={key} onChange={(e)=>setKey(e.target.value)} placeholder={existing?.connected?"Enter a new key to replace it":"Paste your API key"}/></label><p>{provider==="groq"?<>Used for fallback transcription and fast chat. <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Create a Groq key</a>.</>:<>Used for speaker-aware transcription and Gemini chat. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Create a Google AI key</a>.</>}</p><div>{existing?.connected&&<button type="button" className="button danger-text" onClick={remove}>Disconnect</button>}<button className="button dark" disabled={saving||key.length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Link2 size={15}/>}Validate & connect</button></div></form><div className="security-note"><LockKeyholeIcon/>Encrypted with AES-256-GCM. Keys are never returned to the browser.</div></section>}</Modal>;
 }
 function LockKeyholeIcon(){return <span className="lock-mini">••</span>}
 

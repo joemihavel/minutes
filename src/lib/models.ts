@@ -3,7 +3,7 @@ import type { ModelCapability, Provider } from "@/lib/types";
 export const DEFAULT_MODELS: Record<Provider, Partial<Record<ModelCapability, string>>> = {
   groq: {
     transcription: "whisper-large-v3",
-    chat: "qwen/qwen3.6-27b",
+    chat: "openai/gpt-oss-120b",
   },
   google: {
     transcription: "gemini-3.5-transcribe",
@@ -14,7 +14,7 @@ export const DEFAULT_MODELS: Record<Provider, Partial<Record<ModelCapability, st
 export const MODEL_OPTIONS: Record<Provider, Partial<Record<ModelCapability, string[]>>> = {
   groq: {
     transcription: ["whisper-large-v3", "whisper-large-v3-turbo"],
-    chat: ["qwen/qwen3.6-27b"],
+    chat: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
   },
   google: {
     transcription: ["gemini-3.5-transcribe"],

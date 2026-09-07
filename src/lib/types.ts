@@ -1,4 +1,5 @@
 export type Provider = "groq" | "google";
+export type ChatProvider = Provider | `custom:${string}`;
 export type ModelCapability = "transcription" | "chat";
 export type ClipStatus = "uploading" | "transcribing" | "ready" | "failed";
 
@@ -38,6 +39,16 @@ export type ConnectionDTO = {
     transcription: string | null;
     chat: string | null;
   };
+};
+
+export type CustomModelDTO = {
+  id: string;
+  name: string;
+  providerName: string;
+  baseUrl: string;
+  modelId: string;
+  keyHint: string;
+  updatedAt: string;
 };
 
 export type UsageDTO = {

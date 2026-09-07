@@ -29,6 +29,13 @@
       "when": 1788755886197,
       "tag": "0003_large_justice",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788776218591,
+      "tag": "0004_complete_steel_serpent",
+      "breakpoints": true
     }
   ]
 }

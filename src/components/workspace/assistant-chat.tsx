@@ -13,15 +13,16 @@ import {
   type ThreadMessage,
 } from "@assistant-ui/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { ArrowDown, AudioLines, Check, Copy, FileAudio, LoaderCircle, MessageSquareText, Send, Settings2, Sparkles, Square, X } from "lucide-react";
+import { ArrowDown, AudioLines, Check, Copy, FileAudio, LoaderCircle, MessageSquareText, Send, Server, Settings2, Sparkles, Square, X } from "lucide-react";
 import { ShimmeringText } from "@/components/elevenlabs-ui/shimmering-text";
 import { GeminiIcon } from "@/components/provider-icons";
 import { MarkdownMessage } from "@/components/workspace/markdown-message";
-import type { ClipDTO, ConnectionDTO, Provider } from "@/lib/types";
+import type { ChatProvider, ClipDTO, ConnectionDTO, CustomModelDTO } from "@/lib/types";
 
 type AssistantChatProps = {
   clips: ClipDTO[];
   connections: ConnectionDTO[];
+  customModels: CustomModelDTO[];
   onConnect: () => void;
   onRemoveClip: (clipId: string) => void;
 };
@@ -74,13 +75,29 @@ function ComposerMeta() {
   return <span className="composer-count">{length}/4,000</span>;
 }
 
-export function AssistantChat({ clips, connections, onConnect, onRemoveClip }: AssistantChatProps) {
-  const providers = connections.filter((connection) => connection.connected).map((connection) => connection.provider);
-  const [provider, setProvider] = useState<Provider>("google");
+export function AssistantChat({ clips, connections, customModels, onConnect, onRemoveClip }: AssistantChatProps) {
+  const providers = useMemo(
+    () => connections.filter((connection) => connection.connected).map((connection) => connection.provider),
+    [connections],
+  );
+  const modelChoices = useMemo<ChatProvider[]>(
+    () => [...providers, ...customModels.map((model) => `custom:${model.id}` as const)],
+    [customModels, providers],
+  );
+  const [provider, setProvider] = useState<ChatProvider>("google");
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const scopeKey = clips.map((clip) => clip.id).sort().join(",");
   const clipIds = useMemo(() => scopeKey.split(",").filter(Boolean), [scopeKey]);
-  const activeProvider = providers.includes(provider) ? provider : providers.includes("google") ? "google" : "groq";
+  const activeProvider = useMemo(
+    () => modelChoices.includes(provider)
+      ? provider
+      : providers.includes("google")
+        ? "google"
+        : providers.includes("groq")
+          ? "groq"
+          : modelChoices[0],
+    [modelChoices, provider, providers],
+  );
   const transport = useMemo(
     () => new DefaultChatTransport({
       api: "/api/chat",
@@ -93,7 +110,7 @@ export function AssistantChat({ clips, connections, onConnect, onRemoveClip }: A
   const chat = useChat({ id: scopeKey, transport, experimental_throttle: 40 });
   const { setMessages } = chat;
   const runtime = useAISDKRuntime(chat);
-  const connected = providers.length > 0;
+  const connected = modelChoices.length > 0;
   const plural = clips.length > 1;
   const suggestions = [plural ? "Compare these clips" : "Summarize this clip", "What are the action items?", "क्या मुख्य बातें थीं?"];
 
@@ -137,10 +154,11 @@ export function AssistantChat({ clips, connections, onConnect, onRemoveClip }: A
               disabled={!connected || !historyLoaded}
             />
             <div className="composer-footer">
-              {connected && <label className="composer-model-picker">
-                {activeProvider === "google" ? <GeminiIcon size={14}/> : <AudioLines size={14}/>}
-                <select value={activeProvider} onChange={(event) => setProvider(event.target.value as Provider)} aria-label="AI model">
+              {connected && activeProvider && <label className="composer-model-picker">
+                {activeProvider === "google" ? <GeminiIcon size={14}/> : activeProvider === "groq" ? <AudioLines size={14}/> : <Server size={14}/>}
+                <select value={activeProvider} onChange={(event) => setProvider(event.target.value as ChatProvider)} aria-label="AI model">
                   {providers.map((value) => {const connection=connections.find((item)=>item.provider===value);return <option key={value} value={value}>{value === "groq" ? "Groq" : "Gemini"} · {connection?.models.chat}</option>})}
+                  {customModels.map((model)=><option key={model.id} value={`custom:${model.id}`}>{model.providerName} · {model.name}</option>)}
                 </select>
               </label>}
               <button type="button" className="composer-settings" onClick={onConnect} aria-label="Manage AI models" title="Manage AI models"><Settings2 size={14}/></button>

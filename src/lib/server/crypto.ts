@@ -25,19 +25,15 @@ function encryptionKey() {
   return key;
 }
 
-function associatedData(userId: string, provider: Provider, version: number) {
-  return Buffer.from(`minutes:${userId}:${provider}:v${version}`, "utf8");
+function associatedData(userId: string, scope: string, version: number) {
+  return Buffer.from(`minutes:${userId}:${scope}:v${version}`, "utf8");
 }
 
-export function encryptProviderKey(
-  plaintext: string,
-  userId: string,
-  provider: Provider,
-): EncryptedSecret {
+export function encryptSecret(plaintext: string, userId: string, scope: string): EncryptedSecret {
   const keyVersion = 1;
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
-  cipher.setAAD(associatedData(userId, provider, keyVersion));
+  cipher.setAAD(associatedData(userId, scope, keyVersion));
   const ciphertext = Buffer.concat([
     cipher.update(plaintext, "utf8"),
     cipher.final(),
@@ -51,22 +47,34 @@ export function encryptProviderKey(
   };
 }
 
-export function decryptProviderKey(
-  encrypted: EncryptedSecret,
-  userId: string,
-  provider: Provider,
-) {
+export function decryptSecret(encrypted: EncryptedSecret, userId: string, scope: string) {
   const decipher = createDecipheriv(
     "aes-256-gcm",
     encryptionKey(),
     Buffer.from(encrypted.iv, "base64"),
   );
-  decipher.setAAD(associatedData(userId, provider, encrypted.keyVersion));
+  decipher.setAAD(associatedData(userId, scope, encrypted.keyVersion));
   decipher.setAuthTag(Buffer.from(encrypted.authTag, "base64"));
   return Buffer.concat([
     decipher.update(Buffer.from(encrypted.ciphertext, "base64")),
     decipher.final(),
   ]).toString("utf8");
+}
+
+export function encryptProviderKey(
+  plaintext: string,
+  userId: string,
+  provider: Provider,
+): EncryptedSecret {
+  return encryptSecret(plaintext, userId, provider);
+}
+
+export function decryptProviderKey(
+  encrypted: EncryptedSecret,
+  userId: string,
+  provider: Provider,
+) {
+  return decryptSecret(encrypted, userId, provider);
 }
 
 export function anonymousFingerprint(value: string) {

@@ -18,6 +18,34 @@ export const modelUpdateSchema = z.object({
   capability: z.enum(["transcription", "chat"]),
   modelId: z.string().trim().min(2).max(120).regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:+-]*$/),
 });
+const publicHttpsUrl = z.string().trim().max(500).transform((value, context) => {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    const ipLiteral = /^[\d.]+$/.test(hostname) || hostname.includes(":");
+    const privateHost = ipLiteral
+      || hostname === "localhost"
+      || hostname === "::1"
+      || hostname.endsWith(".local")
+      || /^127\./.test(hostname)
+      || /^10\./.test(hostname)
+      || /^192\.168\./.test(hostname)
+      || /^169\.254\./.test(hostname)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || privateHost) throw new Error();
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    context.addIssue({ code: "custom", message: "Enter a public HTTPS API base URL." });
+    return z.NEVER;
+  }
+});
+export const customModelSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  providerName: z.string().trim().min(2).max(80),
+  baseUrl: publicHttpsUrl,
+  modelId: z.string().trim().min(2).max(160).regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:+-]*$/),
+  apiKey: z.string().trim().min(8).max(1_000),
+});
 export const clipUpdateSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
@@ -30,7 +58,10 @@ export const shareSchema = z.object({
 });
 export const chatRequestSchema = z.object({
   clipIds: z.array(uuidSchema).min(1).max(5).transform((ids) => [...new Set(ids)]),
-  provider: providerSchema,
+  provider: z.union([
+    providerSchema,
+    z.string().regex(/^custom:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+  ]),
   message: z.object({
     id: z.string().min(1).max(128),
     role: z.literal("user"),

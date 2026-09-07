@@ -6,7 +6,7 @@ import { upload as uploadBlob } from "@vercel/blob/client";
 import {
   ArrowUpRight, AudioLines, Bot, Check, CircleHelp, ClipboardPaste, Copy, FileAudio, FileText,
   HardDrive, Link2, LoaderCircle, Menu, MessageSquareText, MoreHorizontal, Pencil,
-  KeyRound, Mic, Plus, RefreshCw, Search, Settings2, Share2, Sparkles, Trash2,
+  KeyRound, Mic, Plus, RefreshCw, Search, Server, Settings2, Share2, Sparkles, Trash2,
   Upload, UploadCloud, X,
 } from "lucide-react";
 import { Brand } from "@/components/brand";
@@ -24,7 +24,7 @@ import {
   matchesPersistedUpload,
   safeFilename,
 } from "@/lib/clip-helpers";
-import type { ClipDTO, ConnectionDTO, ModelCapability, Provider, TranscriptSegment, UsageDTO } from "@/lib/types";
+import type { ClipDTO, ConnectionDTO, CustomModelDTO, ModelCapability, Provider, TranscriptSegment, UsageDTO } from "@/lib/types";
 
 type Pane = "library" | "transcript" | "chat";
 type Dialog = "providers" | "usage" | "share" | "delete" | "recording" | null;
@@ -109,12 +109,13 @@ async function reconcileUploadedClip(file: File, startedAt: string) {
   return undefined;
 }
 
-export function Workspace({ initialClips, initialConnections, initialUsage }: {
-  initialClips: ClipDTO[]; initialConnections: ConnectionDTO[]; initialUsage: UsageDTO;
+export function Workspace({ initialClips, initialConnections, initialCustomModels, initialUsage }: {
+  initialClips: ClipDTO[]; initialConnections: ConnectionDTO[]; initialCustomModels: CustomModelDTO[]; initialUsage: UsageDTO;
 }) {
   const [clips, setClips] = useState(initialClips);
   const [selectedId, setSelectedId] = useState<string | null>(initialClips[0]?.id ?? null);
   const [connections, setConnections] = useState(initialConnections);
+  const [customModels, setCustomModels] = useState(initialCustomModels);
   const [usage, setUsage] = useState(initialUsage);
   const [pane, setPane] = useState<Pane>(initialClips.length ? "transcript" : "library");
   const [dialog, setDialog] = useState<Dialog>(() =>
@@ -454,10 +455,10 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
             : <EmptyWorkspace onUpload={()=>fileRef.current?.click()}/>}
         </section>
         <aside className={`chat-pane ${pane!=="chat"?"mobile-hidden":""}`}>
-          {sourceClips.length ? <AssistantChat key={chatScopeKey} clips={sourceClips} connections={connections} onConnect={()=>setDialog("providers")} onRemoveClip={removeChatSource}/> : <div className="chat-empty"><MessageSquareText/><b>Select chat sources</b><p>Check one or more ready clips in the library to ask questions across them.</p></div>}
+          {sourceClips.length ? <AssistantChat key={chatScopeKey} clips={sourceClips} connections={connections} customModels={customModels} onConnect={()=>setDialog("providers")} onRemoveClip={removeChatSource}/> : <div className="chat-empty"><MessageSquareText/><b>Select chat sources</b><p>Check one or more ready clips in the library to ask questions across them.</p></div>}
         </aside>
       </div>
-      {dialog==="providers"&&<ProviderDialog connections={connections} setConnections={setConnections} close={()=>setDialog(null)} notify={showNotice} onboarding={clips.length===0} onUpload={(file)=>{setDialog(null);void upload(file)}}/>}
+      {dialog==="providers"&&<ProviderDialog connections={connections} setConnections={setConnections} customModels={customModels} setCustomModels={setCustomModels} close={()=>setDialog(null)} notify={showNotice} onboarding={clips.length===0} onUpload={(file)=>{setDialog(null);void upload(file)}}/>}
       {dialog==="recording"&&<RecordingDialog close={()=>setDialog(null)} onRecorded={(file)=>{setDialog(null);void upload(file)}}/>}
       {dialog==="usage"&&<UsageDialog usage={usage} close={()=>setDialog(null)}/>}
       {dialog==="share"&&selected&&<ShareDialog clip={selected} view={shareView} setClip={(clip)=>setClips((xs)=>xs.map((x)=>x.id===clip.id?clip:x))} close={()=>setDialog(null)} notify={showNotice}/>}
@@ -571,38 +572,74 @@ function Modal({title,subtitle,close,children,className=""}:{title:string;subtit
 function ModelRoute({title,description,provider,capability,connection,setConnections,notify,onConnect}:{title:string;description:string;provider:Provider;capability:ModelCapability;connection:ConnectionDTO|undefined;setConnections:(x:ConnectionDTO[])=>void;notify:(x:string)=>void;onConnect:()=>void}) {
   const selected=connection?.models[capability]??"";
   const options=Array.from(new Set([...(MODEL_OPTIONS[provider][capability]??[]),selected].filter(Boolean)));
-  const [custom,setCustom]=useState(false),[customId,setCustomId]=useState(""),[saving,setSaving]=useState(false);
-  const customRef=useRef<HTMLDivElement>(null);
+  const [saving,setSaving]=useState(false);
   const providerLabel=provider==="groq"?"Groq":"Google AI";
-  const closeCustom=useCallback(()=>{setCustom(false);setCustomId("")},[]);
-  useEffect(()=>{
-    if(!custom)return;
-    const dismiss=(event:PointerEvent)=>{if(!customRef.current?.contains(event.target as Node))closeCustom()};
-    const escape=(event:KeyboardEvent)=>{if(event.key==="Escape")closeCustom()};
-    document.addEventListener("pointerdown",dismiss);document.addEventListener("keydown",escape);
-    return()=>{document.removeEventListener("pointerdown",dismiss);document.removeEventListener("keydown",escape)};
-  },[closeCustom,custom]);
   async function choose(modelId:string){
     setSaving(true);
     try{
       const result=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({provider,capability,modelId})});
-      setConnections(result.connections);closeCustom();notify(`${title} model updated.`);
+      setConnections(result.connections);notify(`${title} model updated.`);
     }catch(error){notify(error instanceof Error?error.message:"Could not update the model.")}finally{setSaving(false)}
   }
   return <div className="model-route">
     <span className="model-route-icon">{provider==="google"?<GeminiIcon size={17}/>:capability==="transcription"?<AudioLines size={17}/>:<Bot size={17}/>}</span>
     <div className="model-route-copy"><b>{title}</b><small>{description}</small></div>
-    <div className="model-route-control" ref={customRef}>
-      {connection?.connected?<><div className="model-select-row"><select value={selected} disabled={saving} onChange={(event)=>void choose(event.target.value)} aria-label={`${title} model`}>
+    <div className="model-route-control">
+      {connection?.connected?<div className="model-select-row"><select value={selected} disabled={saving} onChange={(event)=>void choose(event.target.value)} aria-label={`${title} model`}>
         {options.map((model)=><option key={model} value={model}>{model}</option>)}
-      </select><button type="button" className="model-add-trigger" aria-label={`Add a custom ${providerLabel} model`} aria-expanded={custom} onClick={()=>custom?closeCustom():setCustom(true)}><Plus size={15}/></button></div>
-      {custom&&<form className="custom-model-popover" onSubmit={(event)=>{event.preventDefault();if(customId.trim())void choose(customId.trim())}}><header><span className="model-popover-icon">{provider==="google"?<GeminiIcon size={16}/>:<Bot size={16}/>}</span><span><b>Add a {providerLabel} model</b><small>Use the exact ID from your provider dashboard.</small></span></header><label>Model ID<input aria-label="Provider model ID" autoFocus value={customId} onChange={(event)=>setCustomId(event.target.value)} placeholder={provider==="google"?"gemini-…":"provider/model-name"} maxLength={120}/></label><footer><button type="button" className="button secondary" onClick={closeCustom}>Cancel</button><button className="button dark" disabled={saving||customId.trim().length<2}>{saving?<LoaderCircle className="spin" size={14}/>:<Plus size={14}/>}Add model</button></footer></form>}</>:<button type="button" onClick={onConnect}>Connect {providerLabel}</button>}
+      </select></div>:<button type="button" onClick={onConnect}>Connect {providerLabel}</button>}
     </div>
   </div>;
 }
 
-function ProviderDialog({connections,setConnections,close,notify,onboarding,onUpload}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;close:()=>void;notify:(x:string)=>void;onboarding:boolean;onUpload:(file:File)=>void}) {
-  const [view,setView]=useState<"models"|"accounts">(()=>connections.some((item)=>item.connected)?"models":"accounts"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false),[showSettings,setShowSettings]=useState(false),[dropActive,setDropActive]=useState(false);
+const CUSTOM_PROVIDER_PRESETS = [
+  { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
+  { name: "Together AI", baseUrl: "https://api.together.xyz/v1" },
+  { name: "Fireworks AI", baseUrl: "https://api.fireworks.ai/inference/v1" },
+  { name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1" },
+  { name: "Custom provider", baseUrl: "" },
+];
+
+function CustomModelForm({close,onSaved,notify}:{close:()=>void;onSaved:(models:CustomModelDTO[])=>void;notify:(message:string)=>void}) {
+  const [preset,setPreset]=useState(CUSTOM_PROVIDER_PRESETS[0].name);
+  const [providerName,setProviderName]=useState(CUSTOM_PROVIDER_PRESETS[0].name);
+  const [baseUrl,setBaseUrl]=useState(CUSTOM_PROVIDER_PRESETS[0].baseUrl);
+  const [name,setName]=useState("");
+  const [modelId,setModelId]=useState("");
+  const [apiKey,setApiKey]=useState("");
+  const [saving,setSaving]=useState(false);
+  function choosePreset(value:string){
+    const next=CUSTOM_PROVIDER_PRESETS.find((item)=>item.name===value)??CUSTOM_PROVIDER_PRESETS.at(-1)!;
+    setPreset(value);setProviderName(next.name==="Custom provider"?"":next.name);setBaseUrl(next.baseUrl);
+  }
+  async function save(event:React.FormEvent){
+    event.preventDefault();setSaving(true);
+    try{
+      const result=await api<{models:CustomModelDTO[]}>("/api/custom-models",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({name:name.trim(),providerName:providerName.trim(),baseUrl:baseUrl.trim(),modelId:modelId.trim(),apiKey:apiKey.trim()})});
+      onSaved(result.models);notify(`${name.trim()} is ready for Q&A.`);close();
+    }catch(error){notify(error instanceof Error?error.message:"Could not add this model.")}finally{setSaving(false)}
+  }
+  return <form className="custom-provider-form" onSubmit={save}>
+    <header><span><Server size={17}/></span><div><b>Add a Q&A model</b><small>Connect any provider with an OpenAI-compatible chat API.</small></div></header>
+    <div className="custom-provider-grid">
+      <label>Provider<select value={preset} onChange={(event)=>choosePreset(event.target.value)}>{CUSTOM_PROVIDER_PRESETS.map((item)=><option key={item.name}>{item.name}</option>)}</select></label>
+      {preset==="Custom provider"&&<label>Provider name<input value={providerName} onChange={(event)=>setProviderName(event.target.value)} placeholder="Your provider" maxLength={80}/></label>}
+      <label>Model name<input value={name} onChange={(event)=>setName(event.target.value)} placeholder="e.g. Claude Sonnet" maxLength={80}/></label>
+      <label>Model ID<input value={modelId} onChange={(event)=>setModelId(event.target.value)} placeholder="Provider model ID" maxLength={160}/></label>
+      <label className="full">API base URL<input value={baseUrl} onChange={(event)=>setBaseUrl(event.target.value)} placeholder="https://api.provider.com/v1" inputMode="url"/></label>
+      <label className="full">API key<input value={apiKey} onChange={(event)=>setApiKey(event.target.value)} placeholder="Paste API key" type="password" autoComplete="off" maxLength={1000}/></label>
+    </div>
+    <p><LockKeyholeIcon/>Your key is encrypted. Minutes only sends it to this endpoint for your Q&A requests.</p>
+    <footer><button type="button" className="button secondary" onClick={close}>Cancel</button><button className="button dark" disabled={saving||name.trim().length<2||providerName.trim().length<2||modelId.trim().length<2||apiKey.trim().length<8||!baseUrl.trim()}>{saving?<LoaderCircle className="spin" size={14}/>:<Plus size={14}/>}Add model</button></footer>
+  </form>;
+}
+
+function CustomModelRow({model,onDelete}:{model:CustomModelDTO;onDelete:(id:string)=>void}) {
+  return <div className="custom-model-row"><span><Server size={16}/></span><div><b>{model.name}</b><small>{model.providerName} · {model.modelId}</small></div><em>{model.keyHint}</em><button type="button" onClick={()=>onDelete(model.id)} aria-label={`Remove ${model.name}`} title="Remove model"><Trash2 size={14}/></button></div>;
+}
+
+function ProviderDialog({connections,setConnections,customModels,setCustomModels,close,notify,onboarding,onUpload}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;customModels:CustomModelDTO[];setCustomModels:(x:CustomModelDTO[])=>void;close:()=>void;notify:(x:string)=>void;onboarding:boolean;onUpload:(file:File)=>void}) {
+  const [view,setView]=useState<"models"|"accounts">(()=>connections.some((item)=>item.connected)?"models":"accounts"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false),[showSettings,setShowSettings]=useState(false),[dropActive,setDropActive]=useState(false),[addingCustom,setAddingCustom]=useState(false);
   const firstAudioRef=useRef<HTMLInputElement>(null);
   const groq=connections.find((item)=>item.provider==="groq"),google=connections.find((item)=>item.provider==="google");
   const onboardingStep=groq?.connected?(google?.connected?3:2):1;
@@ -611,6 +648,7 @@ function ProviderDialog({connections,setConnections,close,notify,onboarding,onUp
   async function save(e:React.FormEvent){e.preventDefault();setSaving(true);try{const savedProvider=activeProvider;const x=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:savedProvider,apiKey:key.trim()})});setConnections(x.connections);setKey("");if(onboarding&&!showSettings){const bothConnected=["groq","google"].every((name)=>x.connections.some((item)=>item.provider===name&&item.connected));notify(bothConnected?"Both providers are connected. Add your first audio.":`${savedProvider==="groq"?"Groq":"Google AI"} connected. One step left.`)}else{const nextProvider:Provider=savedProvider==="groq"?"google":"groq";const next=x.connections.find((item)=>item.provider===nextProvider);if(!next?.connected){setProvider(nextProvider);setView("accounts");notify(`${savedProvider==="groq"?"Groq":"Google AI"} connected. Add ${nextProvider==="groq"?"Groq":"Google AI"} next.`)}else{setView("models");notify(`${savedProvider==="groq"?"Groq":"Google AI"} connected.`)}}}catch(e){notify(e instanceof Error?e.message:"Connection failed.")}finally{setSaving(false)}}
   async function pasteKey(){try{const text=await navigator.clipboard.readText();if(!text.trim())throw new Error();setKey(text.trim())}catch{notify("Paste the copied key with Command + V or Control + V.")}}
   async function remove(){try{const x=await api<{connections:ConnectionDTO[]}>(`/api/connections?provider=${provider}`,{method:"DELETE"});setConnections(x.connections);notify("Connection removed.")}catch(e){notify(e instanceof Error?e.message:"Could not disconnect.")}}
+  async function removeCustom(id:string){try{const x=await api<{models:CustomModelDTO[]}>(`/api/custom-models?id=${id}`,{method:"DELETE"});setCustomModels(x.models);notify("Custom model removed.")}catch(e){notify(e instanceof Error?e.message:"Could not remove this model.")}}
   const openAccount=(next:Provider)=>{setProvider(next);setView("accounts")};
   const chooseFirstAudio=(file?:File)=>{if(!file)return;if(file.size>MAX_AUDIO_UPLOAD_BYTES){notify("Choose an audio file under 250 MB.");return}onUpload(file)};
 
@@ -651,7 +689,24 @@ function ProviderDialog({connections,setConnections,close,notify,onboarding,onUp
   }
 
   const standardExisting=connections.find((item)=>item.provider===provider);
-  return <Modal title="AI setup" subtitle="Choose models or manage provider access." close={close} className="provider-modal"><div className="provider-view-tabs" role="tablist" aria-label="AI setup"><button role="tab" aria-selected={view==="models"} className={view==="models"?"active":""} onClick={()=>setView("models")}><Bot size={15}/>Models</button><button role="tab" aria-selected={view==="accounts"} className={view==="accounts"?"active":""} onClick={()=>setView("accounts")}><Link2 size={15}/>Accounts</button></div>{view==="models"?<section className="model-routing"><div className="section-label"><span>USED FOR</span><small>New requests</small></div><ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/><ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/></section>:<section className="provider-connect-section"><div className="provider-tabs"><button className={provider==="groq"?"active":""} onClick={()=>setProvider("groq")}><AudioLines/>Groq<small>Transcription + chat</small></button><button className={provider==="google"?"active":""} onClick={()=>setProvider("google")}><GeminiIcon size={18}/>Google AI<small>Speakers + chat</small></button></div><div className="provider-status"><span className={`connection-dot ${standardExisting?.connected?"ready":""}`}/>{standardExisting?.connected?`Connected · ${standardExisting.keyHint}`:"Not connected"}</div><form className="key-form" onSubmit={save}><label>{provider==="groq"?"Groq API key":"Google AI Studio API key"}<input autoComplete="off" type="password" value={key} onChange={(e)=>setKey(e.target.value)} placeholder={standardExisting?.connected?"Enter a new key to replace it":"Paste your API key"}/></label><p>{provider==="groq"?<>Used for fallback transcription and fast chat. <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Create a Groq key</a>.</>:<>Used for speaker-aware transcription and Gemini chat. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Create a Google AI key</a>.</>}</p><div>{standardExisting?.connected&&<button type="button" className="button danger-text" onClick={remove}>Disconnect</button>}<button className="button dark" disabled={saving||key.length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Link2 size={15}/>}Validate & connect</button></div></form><div className="security-note"><LockKeyholeIcon/>Encrypted with AES-256-GCM. Keys are never returned to the browser.</div></section>}</Modal>;
+  return <Modal title="AI setup" subtitle="Choose models or manage provider access." close={close} className="provider-modal">
+    <div className="provider-view-tabs" role="tablist" aria-label="AI setup"><button role="tab" aria-selected={view==="models"} className={view==="models"?"active":""} onClick={()=>setView("models")}><Bot size={15}/>Models</button><button role="tab" aria-selected={view==="accounts"} className={view==="accounts"?"active":""} onClick={()=>setView("accounts")}><Link2 size={15}/>Accounts</button></div>
+    {view==="models"?<section className="model-routing">
+      <div className="section-label"><span>BUILT-IN ROUTING</span><small>New requests</small></div>
+      <ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/>
+      <ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/>
+      <ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/>
+      <ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/>
+      <div className="custom-models-heading"><span><b>YOUR Q&A MODELS</b><small>OpenAI-compatible APIs</small></span><button type="button" onClick={()=>setAddingCustom((value)=>!value)}><Plus size={14}/>{addingCustom?"Close":"Add model"}</button></div>
+      {addingCustom&&<CustomModelForm close={()=>setAddingCustom(false)} onSaved={setCustomModels} notify={notify}/>}
+      {!addingCustom&&<div className="custom-model-list">{customModels.length?customModels.map((model)=><CustomModelRow key={model.id} model={model} onDelete={(id)=>void removeCustom(id)}/>):<button type="button" className="custom-model-empty" onClick={()=>setAddingCustom(true)}><Server size={18}/><span><b>Use another AI provider</b><small>Add any OpenAI-compatible Q&A model and its own key.</small></span><Plus size={15}/></button>}</div>}
+    </section>:<section className="provider-connect-section">
+      <div className="provider-tabs"><button className={provider==="groq"?"active":""} onClick={()=>setProvider("groq")}><AudioLines/>Groq<small>Transcription + chat</small></button><button className={provider==="google"?"active":""} onClick={()=>setProvider("google")}><GeminiIcon size={18}/>Google AI<small>Speakers + chat</small></button></div>
+      <div className="provider-status"><span className={`connection-dot ${standardExisting?.connected?"ready":""}`}/>{standardExisting?.connected?`Connected · ${standardExisting.keyHint}`:"Not connected"}</div>
+      <form className="key-form" onSubmit={save}><label>{provider==="groq"?"Groq API key":"Google AI Studio API key"}<input autoComplete="off" type="password" value={key} onChange={(e)=>setKey(e.target.value)} placeholder={standardExisting?.connected?"Enter a new key to replace it":"Paste your API key"}/></label><p>{provider==="groq"?<>Used for fallback transcription and fast chat. <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Create a Groq key</a>.</>:<>Used for speaker-aware transcription and Gemini chat. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Create a Google AI key</a>.</>}</p><div>{standardExisting?.connected&&<button type="button" className="button danger-text" onClick={remove}>Disconnect</button>}<button className="button dark" disabled={saving||key.length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Link2 size={15}/>}Validate & connect</button></div></form>
+      <div className="security-note"><LockKeyholeIcon/>Encrypted with AES-256-GCM. Keys are never returned to the browser.</div>
+    </section>}
+  </Modal>;
 }
 function LockKeyholeIcon(){return <span className="lock-mini">••</span>}
 

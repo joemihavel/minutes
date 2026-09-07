@@ -47,6 +47,33 @@ export const providerConnections = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.provider] })],
 );
 
+export const customAiModels = pgTable(
+  "custom_ai_models",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: varchar("user_id", { length: 128 }).notNull(),
+    name: varchar("name", { length: 80 }).notNull(),
+    providerName: varchar("provider_name", { length: 80 }).notNull(),
+    baseUrl: text("base_url").notNull(),
+    modelId: varchar("model_id", { length: 160 }).notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    iv: varchar("iv", { length: 64 }).notNull(),
+    authTag: varchar("auth_tag", { length: 64 }).notNull(),
+    keyHint: varchar("key_hint", { length: 16 }).notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("custom_ai_models_user_idx").on(table.userId, table.updatedAt),
+    uniqueIndex("custom_ai_models_user_endpoint_model_idx").on(
+      table.userId,
+      table.baseUrl,
+      table.modelId,
+    ),
+  ],
+);
+
 export const clips = pgTable(
   "clips",
   {

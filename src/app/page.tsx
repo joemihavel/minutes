@@ -1,18 +1,18 @@
 import { auth } from "@clerk/nextjs/server";
-import { SignIn } from "@clerk/nextjs";
-import { Brand } from "@/components/brand";
+import { redirect } from "next/navigation";
 import { Workspace } from "@/components/workspace/workspace";
 import { listClips } from "@/data/clips";
 import { listConnections } from "@/data/connections";
+import { listCustomModels } from "@/data/custom-models";
 import { getUsage } from "@/data/usage";
 
 export default async function Home() {
   const { userId } = await auth();
   if (!userId) {
-    return <main className="auth-page"><Brand /><SignIn /></main>;
+    redirect("/sign-in");
   }
-  const [clips, connections, usage] = await Promise.all([
-    listClips(userId), listConnections(userId), getUsage(userId),
+  const [clips, connections, customModels, usage] = await Promise.all([
+    listClips(userId), listConnections(userId), listCustomModels(userId), getUsage(userId),
   ]);
-  return <Workspace initialClips={clips} initialConnections={connections} initialUsage={usage} />;
+  return <Workspace initialClips={clips} initialConnections={connections} initialCustomModels={customModels} initialUsage={usage} />;
 }

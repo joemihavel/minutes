@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { SharedV4ProviderOptions } from "@ai-sdk/provider";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
@@ -7,23 +8,40 @@ import {
   validateUIMessages,
 } from "ai";
 import { getOwnedClipRows } from "@/data/clips";
+import { getCustomModelConfig } from "@/data/custom-models";
 import { getProviderConfig } from "@/data/connections";
 import { loadScopedConversation, saveScopedConversation } from "@/data/conversations";
 import { recordUsage } from "@/data/usage";
 import { requireUserId } from "@/lib/server/auth";
 import { AppError, errorResponse } from "@/lib/server/errors";
-import { googleProvider, groqProvider } from "@/lib/server/providers";
+import { googleProvider, groqProvider, openAICompatibleProvider } from "@/lib/server/providers";
 import { enforceRateLimit } from "@/lib/server/rate-limit";
 import { chatRequestSchema, MAX_CHAT_CONTEXT_CHARS, parseJson } from "@/lib/server/validation";
+import { compactTranscriptExcerpts, GROQ_SUMMARY_CONTEXT_CHARS } from "@/lib/summary-context";
+
+function chatProviderOptions(provider: string, modelId: string): SharedV4ProviderOptions | undefined {
+  if (provider === "groq" && /(?:qwen.*qwen3|qwen-qwq|deepseek-r1|gpt-oss)/i.test(modelId)) {
+    return {
+      groq: {
+        reasoningFormat: "hidden" as const,
+        ...(/qwen.*qwen3\.6/i.test(modelId) ? { reasoningEffort: "none" as const } : {}),
+      },
+    };
+  }
+  if (provider === "google") {
+    return { google: { thinkingConfig: { includeThoughts: false } } };
+  }
+  return undefined;
+}
 
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
     await enforceRateLimit("chat", userId);
     const input = await parseJson(request, chatRequestSchema, 12_000);
-    const [clips, providerConfig, previous] = await Promise.all([
+    const customId = input.provider.startsWith("custom:") ? input.provider.slice(7) : null;
+    const [clips, previous] = await Promise.all([
       getOwnedClipRows(userId, input.clipIds),
-      getProviderConfig(userId, input.provider),
       loadScopedConversation(userId, input.clipIds),
     ]);
     if (clips.some((clip) => clip.status !== "ready" || !clip.transcript)) {
@@ -38,19 +56,30 @@ export async function POST(request: Request) {
     const messages = await validateUIMessages({
       messages: [...previous.slice(-19), incoming],
     });
-    const modelId = providerConfig.models.chat;
-    if (!modelId) throw new AppError("Choose a chat model before continuing.", 409, "MODEL_REQUIRED");
-    const model =
-      input.provider === "groq"
+    let modelId: string | null;
+    let model;
+    if (customId) {
+      const providerConfig = await getCustomModelConfig(userId, customId);
+      modelId = providerConfig.modelId;
+      model = openAICompatibleProvider(providerConfig).chatModel(modelId);
+    } else {
+      const providerConfig = await getProviderConfig(userId, input.provider as "groq" | "google");
+      modelId = providerConfig.models.chat;
+      if (!modelId) throw new AppError("Choose a chat model before continuing.", 409, "MODEL_REQUIRED");
+      model = input.provider === "groq"
         ? groqProvider(providerConfig.apiKey)(modelId)
         : googleProvider(providerConfig.apiKey)(modelId);
+    }
     const perClipLimit = Math.floor(MAX_CHAT_CONTEXT_CHARS / clips.length);
-    const transcript = clips
+    const fullTranscript = clips
       .map(
         (clip, index) =>
           `SOURCE ${index + 1}: ${clip.title}\n${clip.transcript.slice(0, perClipLimit)}`,
       )
       .join("\n\n---\n\n");
+    const transcript = input.provider === "groq"
+      ? compactTranscriptExcerpts(fullTranscript, GROQ_SUMMARY_CONTEXT_CHARS)
+      : fullTranscript;
 
     const result = streamText({
       model,
@@ -58,11 +87,12 @@ export async function POST(request: Request) {
       messages: await convertToModelMessages(messages),
       maxOutputTokens: 900,
       abortSignal: request.signal,
+      providerOptions: chatProviderOptions(input.provider, modelId),
       onFinish: async ({ usage }) => {
         await recordUsage({
           userId,
           clipId: clips[0]?.id,
-          provider: input.provider,
+          provider: customId ? undefined : input.provider as "groq" | "google",
           model: modelId,
           operation: "chat",
           inputTokens: usage.inputTokens ?? 0,

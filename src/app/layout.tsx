@@ -79,7 +79,29 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body>
-        <ClerkProvider dynamic>{children}</ClerkProvider>
+        <ClerkProvider
+          dynamic
+          signInUrl="/sign-in"
+          signUpUrl="/sign-up"
+          signInFallbackRedirectUrl="/"
+          signUpFallbackRedirectUrl="/"
+          localization={{
+            signIn: {
+              start: {
+                title: "Sign in to Minutes",
+                titleCombined: "Sign in to Minutes",
+              },
+            },
+            signUp: {
+              start: {
+                title: "Create your Minutes account",
+                titleCombined: "Create your Minutes account",
+              },
+            },
+          }}
+        >
+          {children}
+        </ClerkProvider>
       </body>
     </html>
   );

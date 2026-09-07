@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UserButton } from "@clerk/nextjs";
 import { upload as uploadBlob } from "@vercel/blob/client";
 import {
-  AudioLines, Bot, Check, CircleHelp, Copy, FileAudio, FileText,
+  ArrowUpRight, AudioLines, Bot, Check, CircleHelp, ClipboardPaste, Copy, FileAudio, FileText,
   HardDrive, Link2, LoaderCircle, Menu, MessageSquareText, MoreHorizontal, Pencil,
-  Mic, Plus, RefreshCw, Search, Settings2, Share2, Sparkles, Trash2,
+  KeyRound, Mic, Plus, RefreshCw, Search, Settings2, Share2, Sparkles, Trash2,
   Upload, UploadCloud, X,
 } from "lucide-react";
 import { Brand } from "@/components/brand";
@@ -117,7 +117,7 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
   const [usage, setUsage] = useState(initialUsage);
   const [pane, setPane] = useState<Pane>(initialClips.length ? "transcript" : "library");
   const [dialog, setDialog] = useState<Dialog>(() =>
-    initialClips.length === 0 && !initialConnections.some((connection) => connection.connected)
+    initialClips.length === 0
       ? "providers"
       : null,
   );
@@ -456,7 +456,7 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
           {sourceClips.length ? <AssistantChat key={chatScopeKey} clips={sourceClips} connections={connections} onConnect={()=>setDialog("providers")} onRemoveClip={removeChatSource}/> : <div className="chat-empty"><MessageSquareText/><b>Select chat sources</b><p>Check one or more ready clips in the library to ask questions across them.</p></div>}
         </aside>
       </div>
-      {dialog==="providers"&&<ProviderDialog connections={connections} setConnections={setConnections} close={()=>setDialog(null)} notify={showNotice}/>}
+      {dialog==="providers"&&<ProviderDialog connections={connections} setConnections={setConnections} close={()=>setDialog(null)} notify={showNotice} onboarding={clips.length===0} onUpload={(file)=>{setDialog(null);void upload(file)}}/>}
       {dialog==="recording"&&<RecordingDialog close={()=>setDialog(null)} onRecorded={(file)=>{setDialog(null);void upload(file)}}/>}
       {dialog==="usage"&&<UsageDialog usage={usage} close={()=>setDialog(null)}/>}
       {dialog==="share"&&selected&&<ShareDialog clip={selected} view={shareView} setClip={(clip)=>setClips((xs)=>xs.map((x)=>x.id===clip.id?clip:x))} close={()=>setDialog(null)} notify={showNotice}/>}
@@ -600,14 +600,57 @@ function ModelRoute({title,description,provider,capability,connection,setConnect
   </div>;
 }
 
-function ProviderDialog({connections,setConnections,close,notify}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;close:()=>void;notify:(x:string)=>void}) {
-  const [view,setView]=useState<"models"|"accounts">(()=>connections.some((item)=>item.connected)?"models":"accounts"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false); const existing=connections.find((x)=>x.provider===provider);
-  async function save(e:React.FormEvent){e.preventDefault();setSaving(true);try{const x=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider,apiKey:key})});setConnections(x.connections);setKey("");const nextProvider:Provider=provider==="groq"?"google":"groq";const next=x.connections.find((item)=>item.provider===nextProvider);if(!next?.connected){setProvider(nextProvider);setView("accounts");notify(`${provider==="groq"?"Groq":"Google AI"} connected. Add ${nextProvider==="groq"?"Groq":"Google AI"} next.`)}else{setView("models");notify(`${provider==="groq"?"Groq":"Google AI"} connected.`)}}catch(e){notify(e instanceof Error?e.message:"Connection failed.")}finally{setSaving(false)}}
-  async function remove(){try{const x=await api<{connections:ConnectionDTO[]}>(`/api/connections?provider=${provider}`,{method:"DELETE"});setConnections(x.connections);notify("Connection removed.")}catch(e){notify(e instanceof Error?e.message:"Could not disconnect.")}}
+function ProviderDialog({connections,setConnections,close,notify,onboarding,onUpload}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;close:()=>void;notify:(x:string)=>void;onboarding:boolean;onUpload:(file:File)=>void}) {
+  const [view,setView]=useState<"models"|"accounts">(()=>connections.some((item)=>item.connected)?"models":"accounts"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false),[showSettings,setShowSettings]=useState(false),[dropActive,setDropActive]=useState(false);
+  const firstAudioRef=useRef<HTMLInputElement>(null);
   const groq=connections.find((item)=>item.provider==="groq"),google=connections.find((item)=>item.provider==="google");
+  const onboardingStep=groq?.connected?(google?.connected?3:2):1;
+  const onboardingProvider:Provider=onboardingStep===1?"groq":"google";
+  const activeProvider=onboarding&&!showSettings&&onboardingStep<3?onboardingProvider:provider;
+  async function save(e:React.FormEvent){e.preventDefault();setSaving(true);try{const savedProvider=activeProvider;const x=await api<{connections:ConnectionDTO[]}>("/api/connections",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:savedProvider,apiKey:key.trim()})});setConnections(x.connections);setKey("");if(onboarding&&!showSettings){const bothConnected=["groq","google"].every((name)=>x.connections.some((item)=>item.provider===name&&item.connected));notify(bothConnected?"Both providers are connected. Add your first audio.":`${savedProvider==="groq"?"Groq":"Google AI"} connected. One step left.`)}else{const nextProvider:Provider=savedProvider==="groq"?"google":"groq";const next=x.connections.find((item)=>item.provider===nextProvider);if(!next?.connected){setProvider(nextProvider);setView("accounts");notify(`${savedProvider==="groq"?"Groq":"Google AI"} connected. Add ${nextProvider==="groq"?"Groq":"Google AI"} next.`)}else{setView("models");notify(`${savedProvider==="groq"?"Groq":"Google AI"} connected.`)}}}catch(e){notify(e instanceof Error?e.message:"Connection failed.")}finally{setSaving(false)}}
+  async function pasteKey(){try{const text=await navigator.clipboard.readText();if(!text.trim())throw new Error();setKey(text.trim())}catch{notify("Paste the copied key with Command + V or Control + V.")}}
+  async function remove(){try{const x=await api<{connections:ConnectionDTO[]}>(`/api/connections?provider=${provider}`,{method:"DELETE"});setConnections(x.connections);notify("Connection removed.")}catch(e){notify(e instanceof Error?e.message:"Could not disconnect.")}}
   const openAccount=(next:Provider)=>{setProvider(next);setView("accounts")};
-  const firstConnection=!connections.some((item)=>item.connected);
-  return <Modal title="AI setup" subtitle={firstConnection?"Connect Groq and Google AI to start recording, transcribing, and chatting.":"Choose models or manage provider access."} close={close} className="provider-modal"><div className="provider-view-tabs" role="tablist" aria-label="AI setup"><button role="tab" aria-selected={view==="models"} className={view==="models"?"active":""} onClick={()=>setView("models")}><Bot size={15}/>Models</button><button role="tab" aria-selected={view==="accounts"} className={view==="accounts"?"active":""} onClick={()=>setView("accounts")}><Link2 size={15}/>Accounts</button></div>{view==="models"?<section className="model-routing"><div className="section-label"><span>USED FOR</span><small>New requests</small></div><ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/><ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/></section>:<section className="provider-connect-section"><div className="provider-tabs"><button className={provider==="groq"?"active":""} onClick={()=>setProvider("groq")}><AudioLines/>Groq<small>Transcription + chat</small></button><button className={provider==="google"?"active":""} onClick={()=>setProvider("google")}><GeminiIcon size={18}/>Google AI<small>Speakers + chat</small></button></div><div className="provider-status"><span className={`connection-dot ${existing?.connected?"ready":""}`}/>{existing?.connected?`Connected · ${existing.keyHint}`:"Not connected"}</div><form className="key-form" onSubmit={save}><label>{provider==="groq"?"Groq API key":"Google AI Studio API key"}<input autoComplete="off" type="password" value={key} onChange={(e)=>setKey(e.target.value)} placeholder={existing?.connected?"Enter a new key to replace it":"Paste your API key"}/></label><p>{provider==="groq"?<>Used for fallback transcription and fast chat. <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Create a Groq key</a>.</>:<>Used for speaker-aware transcription and Gemini chat. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Create a Google AI key</a>.</>}</p><div>{existing?.connected&&<button type="button" className="button danger-text" onClick={remove}>Disconnect</button>}<button className="button dark" disabled={saving||key.length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Link2 size={15}/>}Validate & connect</button></div></form><div className="security-note"><LockKeyholeIcon/>Encrypted with AES-256-GCM. Keys are never returned to the browser.</div></section>}</Modal>;
+  const chooseFirstAudio=(file?:File)=>{if(!file)return;if(file.size>MAX_AUDIO_UPLOAD_BYTES){notify("Choose an audio file under 250 MB.");return}onUpload(file)};
+
+  if(onboarding&&!showSettings){
+    const isGroq=onboardingProvider==="groq";
+    const providerName=isGroq?"Groq":"Google AI";
+    const keyUrl=isGroq?"https://console.groq.com/keys":"https://aistudio.google.com/app/apikey";
+    return <Modal title="Set up Minutes" subtitle="Connect your providers, then turn your first recording into a transcript." close={close} className="provider-modal onboarding-modal">
+      <div className="onboarding-progress" aria-label={`Step ${onboardingStep} of 3`}><span>STEP {onboardingStep} OF 3</span><div>{[1,2,3].map((step)=><i key={step} className={step<=onboardingStep?"active":""}/>)}</div></div>
+      <div className="onboarding-layout">
+        <ol className="onboarding-steps">
+          {[{number:1,title:"Connect Groq",detail:"Transcription fallback + chat"},{number:2,title:"Connect Gemini",detail:"Speakers + detailed summaries"},{number:3,title:"Add first audio",detail:"Upload and start transcribing"}].map((item)=>{
+            const complete=item.number<onboardingStep,active=item.number===onboardingStep;
+            return <li key={item.number} className={`${active?"active":""} ${complete?"complete":""}`}><span>{complete?<Check size={13}/>:item.number}</span><div><b>{item.title}</b><small>{item.detail}</small></div></li>;
+          })}
+        </ol>
+        {onboardingStep<3?<section className="onboarding-task">
+          <div className="onboarding-task-heading"><span className="provider-task-icon">{isGroq?<AudioLines size={19}/>:<GeminiIcon size={20}/>}</span><div><small>{isGroq?"STEP 1":"STEP 2"}</small><h3>Connect {providerName}</h3><p>{isGroq?"Groq handles fast chat and is the transcription fallback.":"Gemini identifies speakers and creates detailed summaries."}</p></div></div>
+          <ol className="key-steps">
+            <li><span>1</span><p>Open <a href={keyUrl} target="_blank" rel="noreferrer">{isGroq?"Groq API Keys":"Google AI Studio"}<ArrowUpRight size={12}/></a> and sign in.</p></li>
+            <li><span>2</span><p>{isGroq?<>Select <b>Create API key</b>, name it “Minutes,” then create it.</>:<>Use the key AI Studio creates for new users, or select <b>Create API key</b> and choose or import a project.</>}</p></li>
+            <li><span>3</span><p>Copy the new key, return here, and paste it below.</p></li>
+          </ol>
+          <form className="onboarding-key-form" onSubmit={save}>
+            <label htmlFor="onboarding-api-key">{providerName} API key</label>
+            <div className="onboarding-key-input"><KeyRound size={15}/><input id="onboarding-api-key" autoFocus autoComplete="off" type="password" value={key} onChange={(event)=>setKey(event.target.value)} placeholder={isGroq?"gsk_…":"Paste your Gemini key"}/><button type="button" onClick={()=>void pasteKey()}><ClipboardPaste size={14}/>Paste</button></div>
+            <div className="onboarding-task-actions"><a className="button secondary" href={keyUrl} target="_blank" rel="noreferrer">Open {isGroq?"Groq":"AI Studio"}<ArrowUpRight size={14}/></a><button className="button dark" disabled={saving||key.trim().length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Check size={15}/>}Validate & continue</button></div>
+          </form>
+          <div className="security-note"><LockKeyholeIcon/>Encrypted before storage and never shown again.</div>
+        </section>:<section className="onboarding-task first-audio-task">
+          <div className="onboarding-task-heading"><span className="provider-task-icon"><UploadCloud size={20}/></span><div><small>STEP 3</small><h3>Upload your first audio</h3><p>Minutes will detect the language, identify speakers, and create the transcript.</p></div></div>
+          <input ref={firstAudioRef} hidden type="file" accept="audio/*,.mp3,.m4a,.mp4,.wav,.webm,.ogg,.oga" onChange={(event)=>chooseFirstAudio(event.target.files?.[0])}/>
+          <button type="button" className={`onboarding-dropzone ${dropActive?"active":""}`} onClick={()=>firstAudioRef.current?.click()} onDragOver={(event)=>{event.preventDefault();setDropActive(true)}} onDragLeave={()=>setDropActive(false)} onDrop={(event)=>{event.preventDefault();setDropActive(false);chooseFirstAudio(event.dataTransfer.files?.[0])}}><span><UploadCloud size={20}/></span><b>Drop audio here or choose a file</b><small>MP3, M4A, WAV, MP4, WebM or OGG · up to 250 MB</small></button>
+          <div className="onboarding-task-actions"><button type="button" className="button secondary" onClick={()=>setShowSettings(true)}>Review model settings</button><button type="button" className="button dark" onClick={()=>firstAudioRef.current?.click()}><Upload size={15}/>Choose audio</button></div>
+        </section>}
+      </div>
+    </Modal>;
+  }
+
+  const standardExisting=connections.find((item)=>item.provider===provider);
+  return <Modal title="AI setup" subtitle="Choose models or manage provider access." close={close} className="provider-modal"><div className="provider-view-tabs" role="tablist" aria-label="AI setup"><button role="tab" aria-selected={view==="models"} className={view==="models"?"active":""} onClick={()=>setView("models")}><Bot size={15}/>Models</button><button role="tab" aria-selected={view==="accounts"} className={view==="accounts"?"active":""} onClick={()=>setView("accounts")}><Link2 size={15}/>Accounts</button></div>{view==="models"?<section className="model-routing"><div className="section-label"><span>USED FOR</span><small>New requests</small></div><ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/><ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/><ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/></section>:<section className="provider-connect-section"><div className="provider-tabs"><button className={provider==="groq"?"active":""} onClick={()=>setProvider("groq")}><AudioLines/>Groq<small>Transcription + chat</small></button><button className={provider==="google"?"active":""} onClick={()=>setProvider("google")}><GeminiIcon size={18}/>Google AI<small>Speakers + chat</small></button></div><div className="provider-status"><span className={`connection-dot ${standardExisting?.connected?"ready":""}`}/>{standardExisting?.connected?`Connected · ${standardExisting.keyHint}`:"Not connected"}</div><form className="key-form" onSubmit={save}><label>{provider==="groq"?"Groq API key":"Google AI Studio API key"}<input autoComplete="off" type="password" value={key} onChange={(e)=>setKey(e.target.value)} placeholder={standardExisting?.connected?"Enter a new key to replace it":"Paste your API key"}/></label><p>{provider==="groq"?<>Used for fallback transcription and fast chat. <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">Create a Groq key</a>.</>:<>Used for speaker-aware transcription and Gemini chat. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Create a Google AI key</a>.</>}</p><div>{standardExisting?.connected&&<button type="button" className="button danger-text" onClick={remove}>Disconnect</button>}<button className="button dark" disabled={saving||key.length<12}>{saving?<LoaderCircle className="spin" size={15}/>:<Link2 size={15}/>}Validate & connect</button></div></form><div className="security-note"><LockKeyholeIcon/>Encrypted with AES-256-GCM. Keys are never returned to the browser.</div></section>}</Modal>;
 }
 function LockKeyholeIcon(){return <span className="lock-mini">••</span>}
 

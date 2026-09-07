@@ -13,11 +13,9 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const siteUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
-  ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-  : process.env.NODE_ENV === "production"
-    ? "https://tryminutes.vercel.app"
-    : "http://localhost:3000";
+const siteUrl = process.env.NODE_ENV === "production"
+  ? "https://tryminutes.vercel.app"
+  : "http://localhost:3000";
 
 const description =
   "Record, transcribe, summarize, and chat with Hindi, English, and Hinglish conversations—with speaker-aware transcripts.";

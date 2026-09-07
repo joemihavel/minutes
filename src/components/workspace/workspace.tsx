@@ -695,7 +695,7 @@ function ProviderDialog({connections,setConnections,customModels,setCustomModels
       <div className="section-label"><span>BUILT-IN ROUTING</span><small>New requests</small></div>
       <ModelRoute title="Speaker transcript" description="Preferred · speakers + code-switching" provider="google" capability="transcription" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/>
       <ModelRoute title="Fallback transcript" description="Used when Google AI is disconnected" provider="groq" capability="transcription" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/>
-      <ModelRoute title="Fast chat" description="Transcript answers · Groq" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/>
+      <ModelRoute title="Default Q&A" description="GPT-OSS 120B · 20B available as fallback" provider="groq" capability="chat" connection={groq} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("groq")}/>
       <ModelRoute title="Gemini chat" description="Google reasoning option" provider="google" capability="chat" connection={google} setConnections={setConnections} notify={notify} onConnect={()=>openAccount("google")}/>
       <div className="custom-models-heading"><span><b>YOUR Q&A MODELS</b><small>OpenAI-compatible APIs</small></span><button type="button" onClick={()=>setAddingCustom((value)=>!value)}><Plus size={14}/>{addingCustom?"Close":"Add model"}</button></div>
       {addingCustom&&<CustomModelForm close={()=>setAddingCustom(false)} onSaved={setCustomModels} notify={notify}/>}

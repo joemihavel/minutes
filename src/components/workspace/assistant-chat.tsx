@@ -84,17 +84,17 @@ export function AssistantChat({ clips, connections, customModels, onConnect, onR
     () => [...providers, ...customModels.map((model) => `custom:${model.id}` as const)],
     [customModels, providers],
   );
-  const [provider, setProvider] = useState<ChatProvider>("google");
+  const [provider, setProvider] = useState<ChatProvider>("groq");
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const scopeKey = clips.map((clip) => clip.id).sort().join(",");
   const clipIds = useMemo(() => scopeKey.split(",").filter(Boolean), [scopeKey]);
   const activeProvider = useMemo(
     () => modelChoices.includes(provider)
       ? provider
-      : providers.includes("google")
-        ? "google"
-        : providers.includes("groq")
-          ? "groq"
+      : providers.includes("groq")
+        ? "groq"
+        : providers.includes("google")
+          ? "google"
           : modelChoices[0],
     [modelChoices, provider, providers],
   );

@@ -5,7 +5,10 @@ import { getDb } from "@/db";
 import { clips } from "@/db/schema";
 import { getClipDTO, listClips } from "@/data/clips";
 import { getUsage, recordUsage } from "@/data/usage";
-import { USER_STORAGE_LIMIT_BYTES } from "@/lib/limits";
+import {
+  MAX_SERVER_AUDIO_UPLOAD_BYTES,
+  USER_STORAGE_LIMIT_BYTES,
+} from "@/lib/limits";
 import { requireUserId } from "@/lib/server/auth";
 import { AppError, errorResponse, safeErrorDetails } from "@/lib/server/errors";
 import { processClipTranscription } from "@/lib/server/process-clip";
@@ -49,7 +52,7 @@ export async function POST(request: Request) {
     if (!(file instanceof File)) {
       throw new AppError("Select an audio file to upload.", 422, "AUDIO_REQUIRED");
     }
-    validateAudio(file);
+    validateAudio(file, MAX_SERVER_AUDIO_UPLOAD_BYTES);
     const currentUsage = await getUsage(userId);
     if (currentUsage.storedBytes + file.size > USER_STORAGE_LIMIT_BYTES) {
       throw new AppError(

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { matchesPersistedUpload, safeFilename, titleFromFilename } from "./clip-helpers";
+import {
+  clientUploadPath,
+  isClientUploadPath,
+  matchesPersistedUpload,
+  safeFilename,
+  titleFromFilename,
+} from "./clip-helpers";
 
 describe("clip helpers", () => {
   it("creates readable titles without changing internal dots", () => {
@@ -27,5 +33,16 @@ describe("matchesPersistedUpload", () => {
       { name: "Team sync (final).m4a", size: 2048 },
       startedAt,
     )).toBe(true);
+  });
+});
+
+describe("client upload paths", () => {
+  it("keeps every upload scoped to its clip", () => {
+    const clipId = "9498e078-034a-41ea-b498-91644664c09e";
+    expect(clientUploadPath(clipId, "meeting.webm")).toBe(
+      `audio/${clipId}/meeting.webm`,
+    );
+    expect(isClientUploadPath(`audio/${clipId}/meeting-random.webm`, clipId)).toBe(true);
+    expect(isClientUploadPath("audio/another-clip/meeting.webm", clipId)).toBe(false);
   });
 });

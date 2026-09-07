@@ -5,12 +5,15 @@ import { getDb } from "@/db";
 import { clips, shares } from "@/db/schema";
 import type { ClipDTO } from "@/lib/types";
 import { AppError } from "@/lib/server/errors";
-import { isTranscriptionStale } from "@/lib/transcription-status";
+import { isTranscriptionStale, isUploadStale } from "@/lib/transcription-status";
 
 type ClipRow = typeof clips.$inferSelect;
 
 function toDTO(row: ClipRow, share?: { slug: string; includeAudio: boolean } | null): ClipDTO {
   const stalled = row.status === "transcribing" && isTranscriptionStale(row.updatedAt);
+  const uploadStalled = row.status === "uploading"
+    && !row.blobUrl
+    && isUploadStale(row.updatedAt);
   return {
     id: row.id,
     title: row.title,
@@ -22,10 +25,12 @@ function toDTO(row: ClipRow, share?: { slug: string; includeAudio: boolean } | n
     summary: row.summary,
     segments: row.segments,
     language: row.language,
-    status: stalled ? "failed" : row.status,
+    status: stalled || uploadStalled ? "failed" : row.status,
     errorMessage: stalled
       ? "Transcription took too long to finish. Your audio is saved—try it again."
-      : row.errorMessage,
+      : uploadStalled
+        ? "The upload did not finish. Select the recording and try again."
+        : row.errorMessage,
     hasAudio: Boolean(row.blobUrl),
     shareSlug: share?.slug ?? null,
     shareIncludesAudio: share?.includeAudio ?? false,

@@ -55,7 +55,10 @@ const allowedMimes = new Set([
 ]);
 const allowedExtensions = new Set(["mp3", "m4a", "mp4", "wav", "webm", "ogg", "oga"]);
 
-export function validateAudio(file: File) {
+export function validateAudioMetadata(
+  file: { name: string; type: string; size: number },
+  maxBytes = MAX_AUDIO_UPLOAD_BYTES,
+) {
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
   if (!allowedMimes.has(file.type) || !allowedExtensions.has(extension)) {
     throw new AppError(
@@ -64,13 +67,18 @@ export function validateAudio(file: File) {
       "UNSUPPORTED_AUDIO",
     );
   }
-  if (file.size <= 0 || file.size > MAX_AUDIO_UPLOAD_BYTES) {
+  if (file.size <= 0 || file.size > maxBytes) {
+    const maxMb = Math.floor(maxBytes / 1024 / 1024);
     throw new AppError(
-      "Audio files must be smaller than 95 MB.",
+      `Audio files must be smaller than ${maxMb} MB.`,
       413,
       "AUDIO_TOO_LARGE",
     );
   }
+}
+
+export function validateAudio(file: File, maxBytes = MAX_AUDIO_UPLOAD_BYTES) {
+  validateAudioMetadata(file, maxBytes);
 }
 
 export async function parseJson<T>(

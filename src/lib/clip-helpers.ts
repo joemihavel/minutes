@@ -21,3 +21,11 @@ export function matchesPersistedUpload(
     && clip.byteSize === file.size
     && new Date(clip.createdAt).getTime() >= new Date(startedAt).getTime() - 5_000;
 }
+
+export function clientUploadPath(clipId: string, filename: string) {
+  return `audio/${clipId}/${filename}`;
+}
+
+export function isClientUploadPath(pathname: string, clipId: string) {
+  return pathname.startsWith(`audio/${clipId}/`);
+}

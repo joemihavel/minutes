@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UserButton } from "@clerk/nextjs";
+import { upload as uploadBlob } from "@vercel/blob/client";
 import {
   AudioLines, Bot, Check, CircleHelp, Copy, FileAudio, FileText,
   HardDrive, Link2, LoaderCircle, Menu, MessageSquareText, MoreHorizontal, Pencil,
@@ -17,7 +18,11 @@ import { RecordingDialog } from "@/components/workspace/recording-dialog";
 import { SummaryContent } from "@/components/summary-content";
 import { MAX_AUDIO_UPLOAD_BYTES, USER_STORAGE_LIMIT_BYTES } from "@/lib/limits";
 import { MODEL_OPTIONS } from "@/lib/models";
-import { matchesPersistedUpload } from "@/lib/clip-helpers";
+import {
+  clientUploadPath,
+  matchesPersistedUpload,
+  safeFilename,
+} from "@/lib/clip-helpers";
 import type { ClipDTO, ConnectionDTO, ModelCapability, Provider, TranscriptSegment, UsageDTO } from "@/lib/types";
 
 type Pane = "library" | "transcript" | "chat";
@@ -47,38 +52,44 @@ function age(value: string) {
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(value));
 }
 
-function uploadAudio(
+async function uploadAudio(
   file: File,
+  clipId: string,
   onProgress: (progress: number) => void,
 ): Promise<{ clip: ClipDTO }> {
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    const form = new FormData();
-    form.set("audio", file);
-    request.open("POST", "/api/clips");
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
-      }
-    };
-    request.onerror = () => reject(new Error("The upload was interrupted. Please try again."));
-    request.onload = () => {
-      let data: { clip?: ClipDTO; error?: string | { message?: string } } = {};
-      try {
-        data = JSON.parse(request.responseText || "{}");
-      } catch {
-        reject(new Error("The server returned an unreadable response."));
-        return;
-      }
-      if (request.status < 200 || request.status >= 300 || !data.clip) {
-        const message = typeof data.error === "string" ? data.error : data.error?.message;
-        reject(new Error(message ?? "Something went wrong while processing the recording."));
-        return;
-      }
-      resolve({ clip: data.clip });
-    };
-    request.send(form);
+  const filename = safeFilename(file.name);
+  const blob = await uploadBlob(clientUploadPath(clipId, filename), file, {
+    access: "private",
+    handleUploadUrl: "/api/clips/upload",
+    clientPayload: JSON.stringify({
+      clipId,
+      filename: file.name,
+      mimeType: file.type,
+      size: file.size,
+    }),
+    contentType: file.type,
+    multipart: file.size > 5 * 1024 * 1024,
+    onUploadProgress: ({ percentage }) => {
+      onProgress(Math.min(100, Math.round(percentage)));
+    },
   });
+
+  let lastError: unknown;
+  for (const delay of [0, 500, 1_500]) {
+    if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
+    try {
+      return await api<{ clip: ClipDTO }>(`/api/clips/${clipId}/complete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ blobUrl: blob.url }),
+      });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("The recording uploaded, but could not be finalized. Please try again.");
 }
 
 async function reconcileUploadedClip(file: File, startedAt: string) {
@@ -87,7 +98,7 @@ async function reconcileUploadedClip(file: File, startedAt: string) {
     try {
       const latest = await api<{ clips: ClipDTO[] }>("/api/clips");
       const recovered = latest.clips.find((clip) =>
-        matchesPersistedUpload(clip, file, startedAt),
+        clip.hasAudio && matchesPersistedUpload(clip, file, startedAt),
       );
       if (recovered) return recovered;
     } catch {
@@ -239,7 +250,13 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
   async function upload(file?: File) {
     if (!file) return;
     if (file.size > MAX_AUDIO_UPLOAD_BYTES) {
-      showNotice("Choose an audio file smaller than 95 MB.");
+      showNotice("A recording can use up to the 250 MB account storage limit.");
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
+    const availableBytes = Math.max(0, USER_STORAGE_LIMIT_BYTES - usage.storedBytes);
+    if (file.size > availableBytes) {
+      showNotice(`This recording needs ${(file.size / 1024 / 1024).toFixed(1)} MB, but only ${storageAvailableMb.toFixed(1)} MB is available.`);
       if (fileRef.current) fileRef.current.value = "";
       return;
     }
@@ -271,7 +288,7 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
     setSelectedId(temporaryId);
     setPane("transcript");
     try {
-      const { clip } = await uploadAudio(file, (progress) => {
+      const { clip } = await uploadAudio(file, temporaryId, (progress) => {
         setUploadProgress((current) => ({ ...current, [temporaryId]: progress }));
         if (progress >= 100) {
           setClips((items) => items.map((item) => item.id === temporaryId ? { ...item, status: "transcribing" } : item));
@@ -337,16 +354,17 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
     }
   }
 
-  function retryUpload(clip: ClipDTO) {
+  async function retryUpload(clip: ClipDTO) {
     const file = retryFilesRef.current.get(clip.id);
     if (!file) {
       fileRef.current?.click();
       return;
     }
+    await fetch(`/api/clips/${clip.id}`, { method: "DELETE" }).catch(() => undefined);
     retryFilesRef.current.delete(clip.id);
     setClips((items) => items.filter((item) => item.id !== clip.id));
     setSelectedId((current) => current === clip.id ? null : current);
-    void upload(file);
+    await upload(file);
   }
 
   async function deleteClip() {
@@ -428,7 +446,11 @@ export function Workspace({ initialClips, initialConnections, initialUsage }: {
           </div>
         </aside>
         <section className={`transcript-pane ${pane!=="transcript"?"mobile-hidden":""}`}>
-          {selected ? selected.status==="ready" ? <Transcript key={selected.id} clip={selected} connections={connections} reveal={revealingIds.has(selected.id)} onRevealComplete={finishTranscriptReveal} onUpdate={updateClip} onReplace={(next)=>setClips((items)=>items.map((item)=>item.id===next.id?next:item))} onShare={(view)=>{setShareView(view);setDialog("share")}} onDelete={()=>requestDelete(selected.id)} onChat={()=>setPane("chat")} onConnect={()=>setDialog("providers")} notify={showNotice}/> : <ProcessingClip clip={selected} progress={uploadProgress[selected.id]} onRetry={()=>selected.hasAudio?void retryTranscription(selected):retryUpload(selected)}/> : <EmptyWorkspace onUpload={()=>fileRef.current?.click()}/>}
+          {selected
+            ? selected.status === "ready"
+              ? <Transcript key={selected.id} clip={selected} connections={connections} reveal={revealingIds.has(selected.id)} onRevealComplete={finishTranscriptReveal} onUpdate={updateClip} onReplace={(next)=>setClips((items)=>items.map((item)=>item.id===next.id?next:item))} onShare={(view)=>{setShareView(view);setDialog("share")}} onDelete={()=>requestDelete(selected.id)} onChat={()=>setPane("chat")} onConnect={()=>setDialog("providers")} notify={showNotice}/>
+              : <ProcessingClip clip={selected} progress={uploadProgress[selected.id]} onRetry={()=>selected.hasAudio?void retryTranscription(selected):void retryUpload(selected)}/>
+            : <EmptyWorkspace onUpload={()=>fileRef.current?.click()}/>}
         </section>
         <aside className={`chat-pane ${pane!=="chat"?"mobile-hidden":""}`}>
           {sourceClips.length ? <AssistantChat key={chatScopeKey} clips={sourceClips} connections={connections} onConnect={()=>setDialog("providers")} onRemoveClip={removeChatSource}/> : <div className="chat-empty"><MessageSquareText/><b>Select chat sources</b><p>Check one or more ready clips in the library to ask questions across them.</p></div>}

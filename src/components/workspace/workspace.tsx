@@ -18,6 +18,7 @@ import { RecordingDialog } from "@/components/workspace/recording-dialog";
 import { SummaryContent } from "@/components/summary-content";
 import { MAX_AUDIO_UPLOAD_BYTES, USER_STORAGE_LIMIT_BYTES } from "@/lib/limits";
 import { MODEL_OPTIONS } from "@/lib/models";
+import { sanitizeGeneratedSummary } from "@/lib/summary";
 import {
   clientUploadPath,
   matchesPersistedUpload,
@@ -501,7 +502,7 @@ function Transcript({clip,connections,reveal,onRevealComplete,onUpdate,onReplace
     document.addEventListener("pointerdown",dismiss);document.addEventListener("keydown",escape);
     return()=>{document.removeEventListener("pointerdown",dismiss);document.removeEventListener("keydown",escape)};
   },[menu]);
-  const activeContent=view==="summary"?clip.summary:clip.transcript;
+  const activeContent=view==="summary"?sanitizeGeneratedSummary(clip.summary):clip.transcript;
   const copyActive=async()=>{if(!activeContent)return;await navigator.clipboard.writeText(activeContent);notify(`${view==="summary"?"Summary":"Transcript"} copied.`)};
   return <div className="document">
     <header className="document-header"><div className="document-title">{editing?<form onSubmit={(e)=>{e.preventDefault();setEditing(false);if(title.trim()!==clip.title)onUpdate({title:title.trim()})}}><input autoFocus value={title} maxLength={160} onChange={(e)=>setTitle(e.target.value)} onBlur={()=>{setEditing(false);if(title.trim()&&title.trim()!==clip.title)onUpdate({title:title.trim()})}}/></form>:<h2 onDoubleClick={()=>setEditing(true)}>{clip.title}<button className="title-edit" onClick={()=>setEditing(true)} aria-label="Rename"><Pencil size={14}/></button></h2>}<p>{duration(clip.durationSeconds)} · {clip.language??"Auto-detected"} · {new Intl.DateTimeFormat("en",{dateStyle:"medium"}).format(new Date(clip.createdAt))}</p></div><div className="document-actions"><div className="menu-wrap" ref={menuRef}><button className="icon-button" aria-label="More actions" aria-expanded={menu} onClick={()=>setMenu(!menu)}><MoreHorizontal size={18}/></button>{menu&&<div className="popover"><button className="danger" onClick={()=>{setMenu(false);onDelete()}}><Trash2 size={14}/>Delete clip</button></div>}</div></div></header>

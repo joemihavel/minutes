@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Check, Copy, FileText, Share2, Sparkles } from "lucide-react";
 import { AudioPlayer } from "@/components/elevenlabs-ui/audio-player";
 import { SummaryContent } from "@/components/summary-content";
+import { sanitizeGeneratedSummary } from "@/lib/summary";
 import type { TranscriptSegment } from "@/lib/types";
 
 type View = "summary" | "transcript";
@@ -39,7 +40,7 @@ export function PublicDocument({
 }) {
   const [view, setView] = useState<View>(initialView);
   const [copied, setCopied] = useState(false);
-  const content = view === "summary" ? summary : transcript;
+  const content = view === "summary" ? sanitizeGeneratedSummary(summary) : transcript;
   const speakerTones = new Map<string, number>();
 
   async function copyContent() {

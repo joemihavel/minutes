@@ -1,4 +1,5 @@
 import { Check, CircleCheck, CircleHelp, ListChecks, Sparkles } from "lucide-react";
+import { parseSummarySections } from "../lib/summary";
 
 const summarySections = [
   { key: "overview", label: "Overview", icon: Sparkles },
@@ -8,21 +9,10 @@ const summarySections = [
   { key: "open-questions", label: "Open questions", icon: CircleHelp },
 ] as const;
 
-function parseSummary(summary: string) {
-  const matches = [...summary.matchAll(/^##\s+(.+)$/gm)];
-  if (!matches.length) return [{ title: "Overview", body: summary }];
-  return matches.map((match, index) => ({
-    title: match[1].trim(),
-    body: summary
-      .slice((match.index ?? 0) + match[0].length, matches[index + 1]?.index ?? summary.length)
-      .trim(),
-  }));
-}
-
 export function SummaryContent({ summary }: { summary: string }) {
   return (
     <div className="summary-sections">
-      {parseSummary(summary).map((section, index) => {
+      {parseSummarySections(summary).map((section, index) => {
         const config = summarySections.find(
           (item) => item.label.toLowerCase() === section.title.toLowerCase(),
         ) ?? summarySections[Math.min(index, summarySections.length - 1)];

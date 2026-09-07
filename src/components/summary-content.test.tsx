@@ -21,4 +21,15 @@ describe("SummaryContent", () => {
     expect(html).toContain("<h3>Overview</h3>");
     expect(html).toContain("A concise overview.");
   });
+
+  it("never renders model reasoning or raw markdown emphasis", () => {
+    const html = renderToStaticMarkup(
+      <SummaryContent summary={"<think>Private reasoning</think>\n## Overview\nA **clean** summary.\n## Key points\n- One useful point."} />,
+    );
+
+    expect(html).not.toContain("Private reasoning");
+    expect(html).not.toContain("**");
+    expect(html).toContain("A clean summary.");
+    expect(html).toContain("<li>One useful point.</li>");
+  });
 });

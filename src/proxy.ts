@@ -6,6 +6,7 @@ export default clerkMiddleware(
       strict: true,
       directives: {
         "base-uri": ["self"],
+        "connect-src": ["https://vercel.com"],
         "font-src": ["self", "data:"],
         "frame-ancestors": ["none"],
         "img-src": ["self", "data:", "blob:"],

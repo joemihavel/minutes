@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/app/globals.css"
+        ],
+        "createdAt": "2026-09-07T02:30:28.289Z",
+        "reason": "Agent: the 2px left rule is semantic Markdown blockquote styling, not a card accent"
+      },
+      {
+        "rule": "gradient-text",
+        "value": "*",
+        "files": [
+          "src/app/globals.css"
+        ],
+        "createdAt": "2026-09-07T02:48:52.761Z",
+        "reason": "User requested the ElevenLabs UI Shimmering Text component for active processing feedback"
+      }
+    ]
+  }
+}

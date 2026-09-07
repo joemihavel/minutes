@@ -1,0 +1,4 @@
+export const MAX_AUDIO_UPLOAD_BYTES = 95 * 1024 * 1024;
+export const GROQ_DIRECT_UPLOAD_BYTES = 24 * 1024 * 1024;
+export const MAX_AUDIO_DURATION_SECONDS = 4 * 60 * 60;
+export const USER_STORAGE_LIMIT_BYTES = 250 * 1024 * 1024;

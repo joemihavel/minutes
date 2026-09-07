@@ -458,7 +458,7 @@ export function Workspace({ initialClips, initialConnections, initialCustomModel
           {sourceClips.length ? <AssistantChat key={chatScopeKey} clips={sourceClips} connections={connections} customModels={customModels} onConnect={()=>setDialog("providers")} onRemoveClip={removeChatSource}/> : <div className="chat-empty"><MessageSquareText/><b>Select chat sources</b><p>Check one or more ready clips in the library to ask questions across them.</p></div>}
         </aside>
       </div>
-      {dialog==="providers"&&<ProviderDialog connections={connections} setConnections={setConnections} customModels={customModels} setCustomModels={setCustomModels} close={()=>setDialog(null)} notify={showNotice} onboarding={clips.length===0} onUpload={(file)=>{setDialog(null);void upload(file)}}/>}
+      {dialog==="providers"&&<ProviderDialog connections={connections} setConnections={setConnections} customModels={customModels} setCustomModels={setCustomModels} close={()=>setDialog(null)} notify={showNotice} onboarding={clips.length===0} onRecord={startRecording} onUpload={(file)=>{setDialog(null);void upload(file)}}/>}
       {dialog==="recording"&&<RecordingDialog close={()=>setDialog(null)} onRecorded={(file)=>{setDialog(null);void upload(file)}}/>}
       {dialog==="usage"&&<UsageDialog usage={usage} close={()=>setDialog(null)}/>}
       {dialog==="share"&&selected&&<ShareDialog clip={selected} view={shareView} setClip={(clip)=>setClips((xs)=>xs.map((x)=>x.id===clip.id?clip:x))} close={()=>setDialog(null)} notify={showNotice}/>}
@@ -638,7 +638,7 @@ function CustomModelRow({model,onDelete}:{model:CustomModelDTO;onDelete:(id:stri
   return <div className="custom-model-row"><span><Server size={16}/></span><div><b>{model.name}</b><small>{model.providerName} · {model.modelId}</small></div><em>{model.keyHint}</em><button type="button" onClick={()=>onDelete(model.id)} aria-label={`Remove ${model.name}`} title="Remove model"><Trash2 size={14}/></button></div>;
 }
 
-function ProviderDialog({connections,setConnections,customModels,setCustomModels,close,notify,onboarding,onUpload}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;customModels:CustomModelDTO[];setCustomModels:(x:CustomModelDTO[])=>void;close:()=>void;notify:(x:string)=>void;onboarding:boolean;onUpload:(file:File)=>void}) {
+function ProviderDialog({connections,setConnections,customModels,setCustomModels,close,notify,onboarding,onRecord,onUpload}:{connections:ConnectionDTO[];setConnections:(x:ConnectionDTO[])=>void;customModels:CustomModelDTO[];setCustomModels:(x:CustomModelDTO[])=>void;close:()=>void;notify:(x:string)=>void;onboarding:boolean;onRecord:()=>void;onUpload:(file:File)=>void}) {
   const [view,setView]=useState<"models"|"accounts">(()=>connections.some((item)=>item.connected)?"models":"accounts"),[provider,setProvider]=useState<Provider>("groq"),[key,setKey]=useState(""),[saving,setSaving]=useState(false),[showSettings,setShowSettings]=useState(false),[dropActive,setDropActive]=useState(false),[addingCustom,setAddingCustom]=useState(false);
   const firstAudioRef=useRef<HTMLInputElement>(null);
   const groq=connections.find((item)=>item.provider==="groq"),google=connections.find((item)=>item.provider==="google");
@@ -660,7 +660,7 @@ function ProviderDialog({connections,setConnections,customModels,setCustomModels
       <div className="onboarding-progress" aria-label={`Step ${onboardingStep} of 3`}><span>STEP {onboardingStep} OF 3</span><div>{[1,2,3].map((step)=><i key={step} className={step<=onboardingStep?"active":""}/>)}</div></div>
       <div className="onboarding-layout">
         <ol className="onboarding-steps">
-          {[{number:1,title:"Connect Groq",detail:"Transcription fallback + chat"},{number:2,title:"Connect Gemini",detail:"Speakers + detailed summaries"},{number:3,title:"Add first audio",detail:"Upload and start transcribing"}].map((item)=>{
+          {[{number:1,title:"Connect Groq",detail:"Transcription fallback + chat"},{number:2,title:"Connect Gemini",detail:"Speakers + detailed summaries"},{number:3,title:"Add first audio",detail:"Record live or upload a file"}].map((item)=>{
             const complete=item.number<onboardingStep,active=item.number===onboardingStep;
             return <li key={item.number} className={`${active?"active":""} ${complete?"complete":""}`}><span>{complete?<Check size={13}/>:item.number}</span><div><b>{item.title}</b><small>{item.detail}</small></div></li>;
           })}
@@ -679,10 +679,18 @@ function ProviderDialog({connections,setConnections,customModels,setCustomModels
           </form>
           <div className="security-note"><LockKeyholeIcon/>Encrypted before storage and never shown again.</div>
         </section>:<section className="onboarding-task first-audio-task">
-          <div className="onboarding-task-heading"><span className="provider-task-icon"><UploadCloud size={20}/></span><div><small>STEP 3</small><h3>Upload your first audio</h3><p>Minutes will detect the language, identify speakers, and create the transcript.</p></div></div>
+          <div className="onboarding-task-heading"><span className="provider-task-icon"><AudioLines size={20}/></span><div><small>STEP 3</small><h3>Add your first audio</h3><p>Record something now or upload an existing file. Minutes will identify speakers and create the transcript.</p></div></div>
           <input ref={firstAudioRef} hidden type="file" accept="audio/*,.mp3,.m4a,.mp4,.wav,.webm,.ogg,.oga" onChange={(event)=>chooseFirstAudio(event.target.files?.[0])}/>
-          <button type="button" className={`onboarding-dropzone ${dropActive?"active":""}`} onClick={()=>firstAudioRef.current?.click()} onDragOver={(event)=>{event.preventDefault();setDropActive(true)}} onDragLeave={()=>setDropActive(false)} onDrop={(event)=>{event.preventDefault();setDropActive(false);chooseFirstAudio(event.dataTransfer.files?.[0])}}><span><UploadCloud size={20}/></span><b>Drop audio here or choose a file</b><small>MP3, M4A, WAV, MP4, WebM or OGG · up to 250 MB</small></button>
-          <div className="onboarding-task-actions"><button type="button" className="button secondary" onClick={()=>setShowSettings(true)}>Review model settings</button><button type="button" className="button dark" onClick={()=>firstAudioRef.current?.click()}><Upload size={15}/>Choose audio</button></div>
+          <div className="onboarding-audio-options">
+            <button type="button" className="onboarding-audio-option record" onClick={onRecord}>
+              <span><Mic size={19}/></span><div><b>Record now</b><small>Use your microphone and see a live transcript</small></div><i>Start talking</i>
+            </button>
+            <button type="button" className={`onboarding-audio-option upload ${dropActive?"active":""}`} onClick={()=>firstAudioRef.current?.click()} onDragOver={(event)=>{event.preventDefault();setDropActive(true)}} onDragLeave={()=>setDropActive(false)} onDrop={(event)=>{event.preventDefault();setDropActive(false);chooseFirstAudio(event.dataTransfer.files?.[0])}}>
+              <span><UploadCloud size={19}/></span><div><b>Upload audio</b><small>Choose a recording or drop it here</small></div><i>Browse files</i>
+            </button>
+          </div>
+          <p className="onboarding-audio-formats">MP3, M4A, WAV, MP4, WebM or OGG · up to 250 MB</p>
+          <div className="onboarding-task-actions"><button type="button" className="button secondary" onClick={()=>setShowSettings(true)}>Review model settings</button></div>
         </section>}
       </div>
     </Modal>;
